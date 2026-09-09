@@ -1,0 +1,66 @@
+name: AI 变现日报 · 每日自动采集发布
+
+on:
+  schedule:
+    # UTC 01:00 = 北京时间 09:00（GitHub Actions cron 可能有 5-30 分钟延迟）
+    - cron: '0 1 * * *'
+  workflow_dispatch: {}   # 支持手动触发
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: daily-news
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 安装依赖
+        run: pip install requests feedparser
+
+      - name: 采集并生成当日日报
+        env:
+          ZHIPU_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
+        run: python scripts/collect.py
+
+      - name: 提交数据
+        run: |
+          git config user.name "news-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add site/data
+          if git diff --cached --quiet; then
+            echo "今日无更新（采集被跳过或无新增）"
+          else
+            git commit -m "daily report $(date -u +%F)"
+            git push
+          fi
+
+  deploy:
+    needs: collect
+    if: ${{ always() && needs.collect.result == 'success' }}
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - id: deployment
+        uses: actions/deploy-pages@v4

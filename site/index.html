@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=5">
+<meta name="theme-color" content="#0d1117">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="AI变现日报">
+<meta name="description" content="每日 AI 大模型变现路径与免费 Token 额度速览，手机端直接打开。">
+<title>AI 变现日报 · 每日大模型变现与免费 Token 速览</title>
+<link rel="manifest" href="manifest.json?v=20260909b">
+<link rel="stylesheet" href="assets/style.css?v=202609092242">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">AI</span>
+    <div class="brand-txt">
+      <strong>AI 变现日报</strong>
+      <em id="topSub">个人 AI 变现 · 免费 Token 薅羊毛</em>
+    </div>
+  </div>
+  <button id="btnRefresh" class="icon-btn" title="刷新数据" aria-label="刷新数据">
+    <span id="refreshGlyph">⟳</span>
+  </button>
+</header>
+
+<main class="wrap">
+
+  <nav class="datenav" id="dateNav" hidden>
+    <button id="btnPrev" class="nav-btn" aria-label="上一期">‹</button>
+    <div class="datenav-mid">
+      <span id="navDate">—</span>
+      <small id="navPos"></small>
+    </div>
+    <button id="btnNext" class="nav-btn" aria-label="下一期">›</button>
+  </nav>
+
+  <section class="hero" id="hero" hidden>
+    <div class="hero-top">
+      <h1 id="heroTitle">加载中…</h1>
+      <div class="hero-meta" id="heroMeta"></div>
+    </div>
+    <p class="hero-summary" id="heroSummary"></p>
+    <div class="stats" id="stats"></div>
+  </section>
+
+  <div class="toolbar" id="toolbar" hidden>
+    <div class="search-row">
+      <input id="searchInput" type="search" placeholder="搜索标题 / 摘要 / 标签…" autocomplete="off">
+    </div>
+    <div class="chips" id="chips"></div>
+  </div>
+
+  <section id="list" class="list"></section>
+
+  <section class="archive" id="archive" hidden>
+    <button class="archive-toggle" id="btnArchive" aria-expanded="false">
+      <span>往期归档</span>
+      <small id="archiveCount">0 期</small>
+      <i id="archiveArrow">▾</i>
+    </button>
+    <div class="archive-body" id="archiveBody" hidden></div>
+  </section>
+
+  <footer class="foot" id="foot" hidden>
+    <p>数据来源为公开可查的厂商公告、官方文档与媒体报道，每条均附原文链接。</p>
+    <p class="foot-ts">数据更新时间：<span id="footTs">—</span></p>
+  </footer>
+
+</main>
+
+<div id="state" class="state">
+  <div class="spinner"></div>
+  <p id="stateMsg">正在加载最新资讯…</p>
+</div>
+
+<script src="assets/app.js?v=202609092242"></script>
+</body>
+</html>

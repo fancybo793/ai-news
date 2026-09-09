@@ -1,0 +1,11 @@
+{
+  "name": "AI 变现日报",
+  "short_name": "AI变现日报",
+  "description": "每日 AI 大模型变现路径与免费 Token 额度速览",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#0d1117",
+  "theme_color": "#0d1117",
+  "lang": "zh-CN",
+  "icons": []
+}

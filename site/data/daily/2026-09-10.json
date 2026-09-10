@@ -1,0 +1,41 @@
+{
+  "date": "2026-09-10",
+  "title": "AI 变现日报 - 2026-09-10",
+  "generatedAt": "2026-09-10T13:40:07+08:00",
+  "itemCount": 2,
+  "summary": "云端自动生成（AI 编辑模式）：变现路径 1 条 · 免费额度 1 条 · 行业动态 0 条 · 避坑 0 条。",
+  "items": [
+    {
+      "category": "free",
+      "title": "免费任务管理工具",
+      "summary": "Reddit上推出了一款免费的公共建设项目管理工具，无限制使用，适合个人或小团队。",
+      "source": "Reddit r/SideProject",
+      "url": "https://www.reddit.com/r/SideProject/comments/1wc707m/nowbuilding_free_forever_task_manager_for/",
+      "tags": [
+        "免费",
+        "项目管理",
+        "工具"
+      ],
+      "platform": "Reddit",
+      "difficulty": "",
+      "amount": "",
+      "cycle": ""
+    },
+    {
+      "category": "money",
+      "title": "Claude Code通行证交换网站",
+      "summary": "Claude通行证交换网站允许付费用户分享并兑换免费信用额度，变现周期可能为2-4周。",
+      "source": "Hacker News",
+      "url": "https://claudecoupons.com",
+      "tags": [
+        "AI",
+        "变现",
+        "信用额度"
+      ],
+      "platform": "",
+      "difficulty": "低",
+      "amount": "$0-100/月",
+      "cycle": "2-4 周"
+    }
+  ]
+}

@@ -14,12 +14,14 @@
 
   var state = {
     index: null,
-    dates: [],
-    pos: 0,
+    dates: [],        // 有日报的日期，倒序
+    dateSet: {},      // date -> issue meta
     data: null,
-    cat: 'all',          // 'all' | cat key | 'favs'
+    cat: 'all',       // 'all' | cat key | 'favs'
     q: '',
-    favs: {}             // key: date#id -> item snapshot
+    favs: {},
+    calY: 0,
+    calM: 0           // 月份 0-11
   };
 
   var $ = function (id) { return document.getElementById(id); };
@@ -36,11 +38,10 @@
 
   function saveFavs() {
     try { localStorage.setItem(FAV_KEY, JSON.stringify(state.favs)); }
-    catch (e) { /* 存储满或隐私模式：静默失败，不打断浏览 */ }
+    catch (e) { /* 隐私模式 / 存储满：静默失败 */ }
   }
 
   function favKey(date, id) { return date + '#' + id; }
-
   function isFaved(date, id) { return !!state.favs[favKey(date, id)]; }
 
   function toggleFav(item) {
@@ -53,6 +54,7 @@
         source: item.source, category: item.category, tags: item.tags || [],
         platform: item.platform || '', difficulty: item.difficulty || '',
         amount: item.amount || '', cycle: item.cycle || '',
+        takeaway: item.takeaway || '', steps: item.steps || '',
         savedAt: Date.now()
       };
     }
@@ -107,8 +109,20 @@
         throw new Error('索引为空');
       }
       state.index = idx;
-      state.dates = idx.dates.slice().sort().reverse(); // 最新在前
+      state.dates = idx.dates.slice().sort().reverse();
+      state.dateSet = {};
+      (idx.issues || []).forEach(function (iss) {
+        if (iss && iss.date) state.dateSet[iss.date] = iss;
+      });
+      state.dates.forEach(function (d) {
+        if (!state.dateSet[d]) state.dateSet[d] = { date: d, title: '', itemCount: 0 };
+      });
       state.pos = 0;
+
+      var latest = state.dates[0].split('-');
+      state.calY = parseInt(latest[0], 10);
+      state.calM = parseInt(latest[1], 10) - 1;
+
       return loadDay(state.dates[0]);
     });
   }
@@ -119,6 +133,8 @@
       if (!d || !Array.isArray(d.items)) throw new Error('数据格式异常：' + date);
       d.items.forEach(function (it) { it._date = d.date; });
       state.data = d;
+      state.pos = state.dates.indexOf(d.date);
+      if (state.pos < 0) state.pos = 0;
       if (state.cat !== 'favs') { state.cat = 'all'; }
       state.q = '';
       $('searchInput').value = '';
@@ -127,21 +143,59 @@
     });
   }
 
+  /* ---------------- calendar ---------------- */
+
+  function renderCalendar() {
+    var y = state.calY, m = state.calM;
+    $('calLabel').textContent = y + ' 年 ' + (m + 1) + ' 月';
+
+    var first = new Date(y, m, 1);
+    var offset = (first.getDay() + 6) % 7;   // 周一为第一列
+    var daysInMonth = new Date(y, m + 1, 0).getDate();
+
+    var html = '';
+    for (var i = 0; i < offset; i++) html += '<span class="cal-cell pad"></span>';
+
+    var p = function (n) { return n < 10 ? '0' + n : '' + n; };
+    var todayStr = (function () {
+      var t = new Date();
+      return t.getFullYear() + '-' + p(t.getMonth() + 1) + '-' + p(t.getDate());
+    })();
+
+    for (var day = 1; day <= daysInMonth; day++) {
+      var ds = y + '-' + p(m + 1) + '-' + p(day);
+      var has = state.dateSet[ds];
+      var cls = 'cal-cell';
+      if (has) cls += ' has';
+      if (state.data && state.data.date === ds) cls += ' cur';
+      if (ds === todayStr) cls += ' today';
+      if (has) {
+        var n = state.dateSet[ds].itemCount ? '<i>' + state.dateSet[ds].itemCount + '</i>' : '<i>·</i>';
+        html += '<button class="' + cls + '" data-date="' + ds + '">' + day + n + '</button>';
+      } else {
+        html += '<span class="' + cls + '">' + day + '</span>';
+      }
+    }
+    $('calGrid').innerHTML = html;
+  }
+
+  function calShift(delta) {
+    var d = new Date(state.calY, state.calM + delta, 1);
+    state.calY = d.getFullYear();
+    state.calM = d.getMonth();
+    renderCalendar();
+  }
+
   /* ---------------- render ---------------- */
 
   function render() {
     var d = state.data;
     if (!d) return;
 
-    $('dateNav').hidden = state.dates.length < 1;
+    $('cal').hidden = false;
     $('hero').hidden = false;
     $('toolbar').hidden = false;
     $('foot').hidden = false;
-
-    $('navDate').textContent = d.date;
-    $('navPos').textContent = '第 ' + (state.pos + 1) + ' / ' + state.dates.length + ' 期';
-    $('btnPrev').disabled = state.pos >= state.dates.length - 1;
-    $('btnNext').disabled = state.pos <= 0;
 
     $('heroTitle').textContent = d.title || ('AI 大模型每日资讯简报 - ' + d.date);
     $('heroMeta').textContent = '数据日期 ' + d.date + ' · 共 ' + (d.items.length) + ' 条';
@@ -150,7 +204,6 @@
     if (d.summary) { sum.textContent = d.summary; sum.style.display = ''; }
     else { sum.style.display = 'none'; }
 
-    // stats
     var count = {};
     CATS.forEach(function (c) { count[c.key] = 0; });
     d.items.forEach(function (it) { if (count[it.category] != null) count[it.category]++; });
@@ -161,6 +214,7 @@
       }).join('');
 
     renderChips(count);
+    renderCalendar();
     renderArchive();
     renderList();
   }
@@ -179,10 +233,7 @@
   /* ---------------- archive ---------------- */
 
   function renderArchive() {
-    var issues = (state.index && Array.isArray(state.index.issues) && state.index.issues.length)
-      ? state.index.issues
-      : state.dates.map(function (d) { return { date: d }; });
-
+    var issues = state.dates.map(function (d) { return state.dateSet[d] || { date: d }; });
     $('archive').hidden = issues.length < 2;
     if ($('archive').hidden) return;
 
@@ -203,6 +254,28 @@
 
   /* ---------------- list ---------------- */
 
+  function guideBlock(it) {
+    // money 类的新手指南块：难度 / 已赚金额 / 周期 / 小结 / 入手步骤
+    var rows = [];
+    if (it.difficulty) rows.push(['上手难度', it.difficulty]);
+    if (it.amount) rows.push(['已赚金额', it.amount]);
+    if (it.cycle) rows.push(['变现周期', it.cycle]);
+    if (it.platform) rows.push(['主要平台', it.platform]);
+    if (!rows.length && !it.takeaway && !it.steps) return '';
+
+    var grid = rows.length
+      ? '<div class="g-grid">' + rows.map(function (r) {
+          return '<div class="g-item"><span>' + esc(r[0]) + '</span><b>' + esc(r[1]) + '</b></div>';
+        }).join('') + '</div>'
+      : '';
+
+    var take = it.takeaway ? '<p class="g-line"><b>小结：</b>' + esc(it.takeaway) + '</p>' : '';
+    var steps = it.steps ? '<p class="g-line"><b>新手入手：</b>' + esc(it.steps) + '</p>' : '';
+    if (!grid && !take && !steps) return '';
+
+    return '<div class="guide"><div class="g-head">🧭 新手指南</div>' + grid + take + steps + '</div>';
+  }
+
   function itemCard(it, opts) {
     opts = opts || {};
     var cat = it.category || 'industry';
@@ -212,16 +285,7 @@
       ? '<div class="card-action"><b>可执行：</b>' + esc(it.action) + '</div>'
       : '';
     var faved = isFaved(it._date, it.id);
-
-    // 新手拆解元信息：来源平台 / 难易度 / 变现金额 / 变现周期
-    var metas = [];
-    if (it.platform) metas.push('📡 ' + it.platform);
-    if (it.difficulty) metas.push('🪜 难度 ' + it.difficulty);
-    if (it.amount) metas.push('💰 ' + it.amount);
-    if (it.cycle) metas.push('⏱ ' + it.cycle);
-    var metaRow = metas.length
-      ? '<div class="meta-row">' + metas.map(function (m) { return '<span class="meta">' + esc(m) + '</span>'; }).join('') + '</div>'
-      : '';
+    var guide = (cat === 'money' || it.takeaway || it.steps) ? guideBlock(it) : '';
 
     var footLeft = opts.showDate
       ? '<span class="src">' + esc(it._date || it.date || '') + (it.source ? ' · ' + esc(it.source) : '') + '</span>'
@@ -236,8 +300,8 @@
         '</div>' +
         '<h2>' + esc(it.title) + '</h2>' +
         '<p>' + esc(it.summary) + '</p>' +
-        metaRow +
         action +
+        guide +
         (tags ? '<div class="tags">' + tags + '</div>' : '') +
         '<div class="card-foot">' + footLeft +
           (it.url ? '<a class="link" href="' + esc(it.url) + '" target="_blank" rel="noopener noreferrer">查看原文 ↗</a>' : '') +
@@ -246,7 +310,6 @@
   }
 
   function renderList() {
-    // —— 收藏视图：跨日期显示所有已收藏条目 ——
     if (state.cat === 'favs') {
       var favs = favList();
       if (!favs.length) {
@@ -260,7 +323,6 @@
       return;
     }
 
-    // —— 普通视图 ——
     var d = state.data;
     var q = state.q.trim().toLowerCase();
 
@@ -268,8 +330,8 @@
       if (state.cat !== 'all' && it.category !== state.cat) return false;
       if (!q) return true;
       var hay = [it.title, it.summary, it.source, it.action, it.platform,
-                 it.difficulty, it.amount, it.cycle, (it.tags || []).join(' ')]
-        .join(' ').toLowerCase();
+                 it.difficulty, it.amount, it.cycle, it.takeaway, it.steps,
+                 (it.tags || []).join(' ')].join(' ').toLowerCase();
       return hay.indexOf(q) !== -1;
     });
 
@@ -291,16 +353,16 @@
       .then(function () { b.classList.remove('spinning'); });
   });
 
-  $('btnPrev').addEventListener('click', function () {
-    if (state.pos >= state.dates.length - 1) return;
-    state.pos++;
-    loadDay(state.dates[state.pos]).catch(function (e) { showState('加载失败：' + e.message, true); });
-  });
+  $('calPrev').addEventListener('click', function () { calShift(-1); });
+  $('calNext').addEventListener('click', function () { calShift(1); });
 
-  $('btnNext').addEventListener('click', function () {
-    if (state.pos <= 0) return;
-    state.pos--;
-    loadDay(state.dates[state.pos]).catch(function (e) { showState('加载失败：' + e.message, true); });
+  $('calGrid').addEventListener('click', function (e) {
+    var cell = e.target.closest('button.cal-cell');
+    if (!cell) return;
+    var date = cell.getAttribute('data-date');
+    if (!date || state.dates.indexOf(date) === -1) return;
+    loadDay(date).then(function () { window.scrollTo({ top: 0, behavior: 'smooth' }); })
+      .catch(function (er) { showState('加载失败：' + er.message, true); });
   });
 
   $('btnArchive').addEventListener('click', function () {
@@ -316,7 +378,6 @@
     var date = row.getAttribute('data-date');
     var idx = state.dates.indexOf(date);
     if (idx === -1) return;
-    state.pos = idx;
     loadDay(date)
       .then(function () {
         $('archiveBody').hidden = true;
@@ -365,7 +426,6 @@
 
   loadFavs();
 
-  // file:// 直开时 fetch 会被 CORS 拦截，给出明确提示而不是静默失败
   if (location.protocol === 'file:') {
     showState('请通过 http(s) 访问本页（浏览器直接双击打开 .html 无法读取数据文件）。', true);
   } else {

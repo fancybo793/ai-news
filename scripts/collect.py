@@ -46,26 +46,69 @@ TODAY = datetime.datetime.now(TZ).strftime("%Y-%m-%d")
 NOW_ISO = datetime.datetime.now(TZ).isoformat(timespec="seconds")
 KEEP_DAYS = 30
 MAX_ITEMS = 20
-PER_SOURCE_CAP = 8
+PER_SOURCE_CAP = 10          # 普通 RSS 每源最多入池条数
+HN_CAP = 4                   # HN 降权：每期最多入池条数
+MIN_ITEMS = 8                # 少于此数时视为"内容不足"，仍生成但不重复补旧
 
 # ---------------- 数据源（全部公开免费，无需 key） ----------------
-# 想加自己的信息源：往这里加一条即可，type 支持 rss / hn
-SOURCES = [
-    {"name": "机器之心", "platform": "公众号/网站", "type": "rss", "url": "https://www.jiqizhixin.com/rss"},
+# 中文社媒（抖音/小红书）没有公开合规 RSS，靠必应/谷歌新闻的关键词索引间接覆盖其内容；
+# B站/YouTube 可在下面 BILIBILI_UIDS / YOUTUBE_CHANNELS 里填 ID 直连。
+
+# 新闻搜索 RSS：按关键词抓全球媒体报道（含大量社媒博主变现内容的转载页）
+NEWS_QUERIES_ZH = [
+    "AI 副业 变现", "AI 赚钱 案例", "AI 变现 博主",
+    "免费 token 额度 领取", "大模型 免费额度", "AI 羊毛 白嫖",
+]
+NEWS_QUERIES_EN = [
+    "AI side hustle income", "free LLM API credits", "creator AI monetization",
+]
+
+# 想直连 B站 / YouTube 的博主：把 ID 填进来即可（可留空）
+# B站: 在 UP 主主页链接 space.bilibili.com/后面的数字；YouTube: 频道页源码里搜 "channel_id" 得到 UC 开头的 ID
+BILIBILI_UIDS = []          # 例: ["9469745"]
+YOUTUBE_CHANNELS = []       # 例: ["UCXuqSBlHAE6Xw-yeJA0Tunw"]
+
+RSSHUB_BASES = ["https://rsshub.app", "https://rss.injahow.cn"]
+
+
+def _news_sources():
+    out = []
+    for q in NEWS_QUERIES_ZH:
+        out.append({"name": f"必应新闻·{q}", "platform": "中文媒体", "type": "rss",
+                    "url": "https://www.bing.com/news/search?q=" + urllib.parse.quote(q) + "&format=RSS&setmkt=zh-CN"})
+        out.append({"name": f"谷歌新闻·{q}", "platform": "中文媒体", "type": "rss",
+                    "url": "https://news.google.com/rss/search?q=" + urllib.parse.quote(q) + "&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"})
+    for q in NEWS_QUERIES_EN:
+        out.append({"name": f"Bing News·{q}", "platform": "英文媒体", "type": "rss",
+                    "url": "https://www.bing.com/news/search?q=" + urllib.parse.quote(q) + "&format=RSS&setmkt=en-US"})
+    return out
+
+
+def _social_sources():
+    out = []
+    for uid in BILIBILI_UIDS:
+        for base in RSSHUB_BASES:
+            out.append({"name": f"B站UP{uid}", "platform": "B站", "type": "rss",
+                        "url": f"{base}/bilibili/user/video/{uid}"})
+            break
+    for ch in YOUTUBE_CHANNELS:
+        out.append({"name": f"YouTube{ch[:8]}", "platform": "YouTube", "type": "rss",
+                    "url": f"https://www.youtube.com/feeds/videos.xml?channel_id={ch}"})
+    return out
+
+
+SOURCES = _news_sources() + _social_sources() + [
     {"name": "量子位", "platform": "公众号/网站", "type": "rss", "url": "https://www.qbitai.com/feed"},
-    {"name": "36氪", "platform": "网站", "type": "rss", "url": "https://36kr.com/feed"},
     {"name": "少数派", "platform": "网站", "type": "rss", "url": "https://sspai.com/feed"},
     {"name": "爱范儿", "platform": "网站", "type": "rss", "url": "https://www.ifanr.com/feed"},
     {"name": "Hacker News", "platform": "Hacker News", "type": "hn",
-     "url": "https://hn.algolia.com/api/v1/search_by_date?tags=story&hitsPerPage=40&query="},
+     "url": "https://hn.algolia.com/api/v1/search_by_date?tags=story&hitsPerPage=30&query="},
     {"name": "Reddit r/SideProject", "platform": "Reddit", "type": "rss", "url": "https://www.reddit.com/r/SideProject/.rss"},
-    {"name": "Reddit r/artificial", "platform": "Reddit", "type": "rss", "url": "https://www.reddit.com/r/artificial/.rss"},
 ]
 
 # HN 用多组关键词查询，提高命中
 HN_QUERIES = [
-    "AI side hustle", "AI income", "free credits", "free tier LLM",
-    "indie AI revenue", "AI monetize", "free API tokens",
+    "AI side hustle", "free credits", "indie AI revenue",
 ]
 
 MONEY_KW = ["变现", "赚钱", "副业", "月入", "接单", "收入", "出单", "涨粉变现",
@@ -170,6 +213,7 @@ def collect_candidates():
                 items = fetch_rss(src)
             else:
                 items = fetch_hn(src)
+            cap = HN_CAP if src["type"] == "hn" else PER_SOURCE_CAP
             kept = 0
             for it in items:
                 key = it["url"].rstrip("/")
@@ -185,7 +229,7 @@ def collect_candidates():
                     "category": cat, "desc": it["desc"],
                 })
                 kept += 1
-                if kept >= PER_SOURCE_CAP:
+                if kept >= cap:
                     break
             log(f"source {src['name']}: {len(items)} fetched, {kept} candidates")
         except Exception as e:
@@ -226,16 +270,18 @@ def llm_pick(candidates):
         "你是「AI 变现日报」的编辑。站点面向想用 AI 赚钱的个人/独立创作者，"
         "严禁把企业级/公司主体的商业化新闻当成个人变现路径。\n"
         "从候选条目中挑选 12-20 条生成日报，规则：\n"
-        "1. category 四选一：money(个人用AI变现的路径/案例，占比最高)、free(免费Token/API额度/算力券/补贴，注明截止日期)、"
-        "industry(行业动态)、tip(避坑实操)。\n"
-        "2. money 类必须填 difficulty(低/中/高)、amount(金额区间如 $300-2000/月)、cycle(变现周期如 2-4 周)，"
-        "若原文没给依据就按行业常识保守估计，禁止夸大。\n"
-        "3. summary 用中文 80-160 字，保留原文关键数字；title 用中文重写，不超 30 字。\n"
-        "4. url 必须原样使用候选里的 url，禁止编造。\n"
-        "5. 只输出 JSON 数组，不要输出任何其他文字。每项字段："
-        '{"category","title","summary","source","url","tags":[],"platform","difficulty","amount","cycle"}'
-        "，其中 difficulty/amount/cycle/platform 仅 money 类必填，其余可为空字符串。\n"
-        "6. 信息量不足或与主题无关的候选直接丢弃。"
+        "1. category 四选一：money(个人用AI变现的路径/案例，占比最高，优先选中文媒体和社媒博主内容)、"
+        "free(免费Token/API额度/算力券/补贴，注明截止日期)、industry(行业动态)、tip(避坑实操)。\n"
+        "2. money 类必填：difficulty(低/中/高)、amount(博主已赚金额区间，如 $300-2000/月，原文没披露就写'未披露，同类约 …')、"
+        "cycle(变现周期如 2-4 周)、takeaway(变现方式小结，40-70字，讲清赚的是谁的钱)、"
+        "steps(新手入手步骤，3-5步一行文字，用①②③④⑤连接)。没有依据的数字保守估计，禁止夸大。\n"
+        "3. 来源配额：Hacker News / Reddit 的条目全场合计最多 2 条，其余名额给中文来源。\n"
+        "4. summary 用中文 80-160 字，保留原文关键数字；title 用中文重写，不超 30 字。\n"
+        "5. url 必须原样使用候选里的 url，禁止编造。\n"
+        "6. 只输出 JSON 数组，不要输出任何其他文字。每项字段："
+        '{"category","title","summary","source","url","tags":[],"platform","difficulty","amount","cycle","takeaway","steps"}'
+        "，其中非 money 类的 platform/difficulty/amount/cycle/takeaway/steps 可为空字符串。\n"
+        "7. 信息量不足或与主题无关的候选直接丢弃。"
     )
     body = {
         "model": model,
@@ -272,6 +318,8 @@ def llm_pick(candidates):
             it.setdefault("difficulty", "")
             it.setdefault("amount", "")
             it.setdefault("cycle", "")
+            it.setdefault("takeaway", "")
+            it.setdefault("steps", "")
             ok.append(it)
         log(f"LLM mode: {len(ok)} items accepted")
         return ok or None
@@ -293,6 +341,7 @@ def fallback_items(candidates):
             "tags": [],
             "platform": c["platform"],
             "difficulty": "", "amount": "", "cycle": "",
+            "takeaway": "", "steps": "",
         })
     return items[:MAX_ITEMS]
 
@@ -345,15 +394,26 @@ def write_report(items, mode):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--force", action="store_true",
+                    help="当天日报已存在时强制重新生成")
     args = ap.parse_args()
 
     log("date:", TODAY)
+
+    # 当天已有日报 -> 跳过（防止一天内的第二次定时触发覆盖/重复）
+    today_file = DAILY / f"{TODAY}.json"
+    if today_file.exists() and not args.force and not args.dry_run:
+        log("today's report already exists -> skip (用 --force 可强制重生成)")
+        return
+
     candidates = collect_candidates()
     log("total candidates:", len(candidates))
 
     seen = existing_urls()
     candidates = [c for c in candidates if c["url"].rstrip("/") not in seen]
     log("after dedup vs last 7 days:", len(candidates))
+    if len(candidates) < MIN_ITEMS:
+        log(f"warning: candidates < {MIN_ITEMS}, today's report will be thin (真实数据有多少发多少，不凑数)")
 
     if not candidates:
         log("NO candidates today -> skip (旧一期保留，不生成空日报)")

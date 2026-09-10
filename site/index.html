@@ -10,7 +10,7 @@
 <meta name="description" content="每日 AI 大模型变现路径与免费 Token 额度速览，手机端直接打开。">
 <title>AI 变现日报 · 每日大模型变现与免费 Token 速览</title>
 <link rel="manifest" href="manifest.json?v=20260909b">
-<link rel="stylesheet" href="assets/style.css?v=202609092242">
+<link rel="stylesheet" href="assets/style.css?v=202609102017">
 </head>
 <body>
 
@@ -29,14 +29,17 @@
 
 <main class="wrap">
 
-  <nav class="datenav" id="dateNav" hidden>
-    <button id="btnPrev" class="nav-btn" aria-label="上一期">‹</button>
-    <div class="datenav-mid">
-      <span id="navDate">—</span>
-      <small id="navPos"></small>
+  <section class="cal" id="cal" hidden>
+    <div class="cal-head">
+      <button id="calPrev" class="cal-nav" aria-label="上个月">‹</button>
+      <strong id="calLabel">—</strong>
+      <button id="calNext" class="cal-nav" aria-label="下个月">›</button>
     </div>
-    <button id="btnNext" class="nav-btn" aria-label="下一期">›</button>
-  </nav>
+    <div class="cal-week">
+      <span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span>
+    </div>
+    <div class="cal-grid" id="calGrid"></div>
+  </section>
 
   <section class="hero" id="hero" hidden>
     <div class="hero-top">
@@ -77,6 +80,6 @@
   <p id="stateMsg">正在加载最新资讯…</p>
 </div>
 
-<script src="assets/app.js?v=202609092242"></script>
+<script src="assets/app.js?v=202609102017"></script>
 </body>
 </html>

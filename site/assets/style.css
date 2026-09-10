@@ -198,6 +198,42 @@ body{
 }
 .link:active{background:rgba(96,165,250,.2)}
 
+/* ---------- calendar ---------- */
+.cal{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:12px;margin-bottom:12px}
+.cal-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:9px}
+.cal-head strong{font-size:14.5px;letter-spacing:.5px}
+.cal-nav{
+  width:34px;height:30px;border-radius:8px;border:1px solid var(--line);
+  background:var(--bg-soft);color:var(--txt-dim);font-size:19px;line-height:1;cursor:pointer;
+}
+.cal-nav:active{color:var(--accent);border-color:var(--accent)}
+.cal-week{display:grid;grid-template-columns:repeat(7,1fr);gap:3px;margin-bottom:4px}
+.cal-week span{text-align:center;font-size:10.5px;color:var(--txt-mute);padding:2px 0}
+.cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px}
+.cal-cell{
+  position:relative;min-height:38px;border-radius:8px;text-align:center;
+  font-size:12.5px;color:var(--txt-mute);padding-top:5px;
+  border:1px solid transparent;font-variant-numeric:tabular-nums;
+}
+.cal-cell.has{color:var(--txt);background:var(--bg-soft);border-color:var(--line);cursor:pointer;font-weight:600}
+.cal-cell.has:active{border-color:var(--accent)}
+.cal-cell.cur{background:rgba(240,180,41,.16);border-color:rgba(240,180,41,.55);color:var(--accent)}
+.cal-cell.today:not(.cur){border-color:rgba(96,165,250,.45)}
+.cal-cell i{display:block;font-style:normal;font-size:9.5px;color:var(--txt-mute);line-height:1.2;margin-top:1px}
+.cal-cell.cur i{color:var(--accent)}
+
+/* ---------- 新手指南（money 卡片） ---------- */
+.guide{
+  margin-top:11px;padding:10px 12px;border-radius:10px;
+  background:rgba(240,180,41,.06);border:1px solid rgba(240,180,41,.22);
+}
+.g-head{font-size:12px;font-weight:700;color:var(--c-money);letter-spacing:.5px;margin-bottom:7px}
+.g-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:7px}
+.g-item span{display:block;font-size:10.5px;color:var(--txt-mute);line-height:1.4}
+.g-item b{display:block;font-size:12.5px;color:var(--txt);line-height:1.5}
+.g-line{margin:6px 0 0;font-size:12.5px;color:#ccd6e0;line-height:1.75}
+.g-line b{color:var(--c-money);font-weight:600}
+
 /* ---------- archive ---------- */
 .archive{margin-top:22px;border:1px solid var(--line);border-radius:var(--radius);background:var(--card);overflow:hidden}
 .archive-toggle{

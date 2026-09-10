@@ -8,6 +8,12 @@ on:
     # UTC 1:30 = 北京 09:30（补跑；当天已有日报会自动跳过，不会重复）
     - cron: '30 1 * * *'
   workflow_dispatch: {}   # 支持手动触发
+  push:
+    branches: [main]      # 代码/数据一有推送就自动重新发布 Pages（当天日报已存在时只发布不重采）
+    paths:
+      - 'site/**'
+      - 'scripts/**'
+      - '.github/workflows/**'
 
 permissions:
   contents: write

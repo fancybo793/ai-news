@@ -2,8 +2,11 @@ name: AI 变现日报 · 每日自动采集发布
 
 on:
   schedule:
-    # UTC 01:00 = 北京时间 09:00（GitHub Actions cron 可能有 5-30 分钟延迟）
-    - cron: '0 1 * * *'
+    # 双保险：GitHub 定时经常延迟数小时，所以放两个时间点
+    # UTC 22:00 = 北京 06:00（主跑；即使延迟 3-4 小时也能在中午前出）
+    - cron: '0 22 * * *'
+    # UTC 1:30 = 北京 09:30（补跑；当天已有日报会自动跳过，不会重复）
+    - cron: '30 1 * * *'
   workflow_dispatch: {}   # 支持手动触发
 
 permissions:

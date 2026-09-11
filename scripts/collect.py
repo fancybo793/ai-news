@@ -3,34 +3,37 @@
 """
 每日资讯自动采集脚本（GitHub Actions 上运行，无需本机开机）
 
-流程：
-  1. 抓取公开源（RSS / Hacker News API 等），按关键词预筛出候选条目
-  2. 与近 7 天已发布条目去重
-  3. 有 ZHIPU_API_KEY → 调用智谱 GLM-4-Flash（永久免费档）做分类、去噪、中文摘要拆解
-     无 key / 调用失败 → 规则分类兜底（真实条目 + 截断摘要，不编造任何内容）
-  4. 写入 site/data/daily/YYYY-MM-DD.json 并更新 site/data/index.json（倒序，保留 30 期）
+v2 改进：
+  1. 信源大幅扩充：必应/谷歌新闻 RSS（多关键词）+ **必应网页搜索 & DuckDuckGo（含 site: 站内检索，
+     可深挖 B站 / 小红书 / 抖音 / YouTube / 知乎 等）+ 垂类 RSS**
+  2. **抓正文**：对候选条目抓取原文正文（最多 1600 字），喂给模型 —— 解决摘要只有十几个字的问题
+  3. LLM 双次尝试（失败自动降规模重试），仍失败才走规则兜底（兜底也用正文，摘要不再干瘪）
+  4. 来源多样性约束：单源配额 + 要求每期至少来自 4 个不同站点
 
 用法：
   python scripts/collect.py            # 正式运行
   python scripts/collect.py --dry-run  # 只抓取与统计，不写文件
+  python scripts/collect.py --force    # 当天已有日报时强制重生成
 """
-import os
-import re
-import json
-import html
 import argparse
 import datetime
+import html as html_mod
+import json
+import os
 import pathlib
-import urllib.request
+import re
+import subprocess
+import sys
+import threading
+import time
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
 import xml.etree.ElementTree as ET
 
 try:
     import requests
 except ImportError:
     requests = None
-    urllib.request.DEFAULT_TIMEOUT = 30
-
 try:
     import feedparser
 except ImportError:
@@ -41,159 +44,381 @@ SITE = ROOT / "site"
 DATA = SITE / "data"
 DAILY = DATA / "daily"
 
-TZ = datetime.timezone(datetime.timedelta(hours=8))  # Asia/Shanghai
+TZ = datetime.timezone(datetime.timedelta(hours=8))
 TODAY = datetime.datetime.now(TZ).strftime("%Y-%m-%d")
 NOW_ISO = datetime.datetime.now(TZ).isoformat(timespec="seconds")
 KEEP_DAYS = 30
 MAX_ITEMS = 20
-PER_SOURCE_CAP = 10          # 普通 RSS 每源最多入池条数
-HN_CAP = 4                   # HN 降权：每期最多入池条数
-MIN_ITEMS = 8                # 少于此数时视为"内容不足"，仍生成但不重复补旧
+MIN_ITEMS = 8
+RSS_CAP = 6          # 单个 RSS 源最多入池条数
+WEB_CAP = 6          # 单个网页搜索词最多入池条数
+HN_CAP = 3           # HN 降权
+ENRICH_MAX = 20      # 最多抓多少条正文（jina 免费档限速，别开太大）
+ENRICH_WORKERS = 4
 
-# ---------------- 数据源（全部公开免费，无需 key） ----------------
-# 中文社媒（抖音/小红书）没有公开合规 RSS，靠必应/谷歌新闻的关键词索引间接覆盖其内容；
-# B站/YouTube 可在下面 BILIBILI_UIDS / YOUTUBE_CHANNELS 里填 ID 直连。
+UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+      "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
 
-# 新闻搜索 RSS：按关键词抓全球媒体报道（含大量社媒博主变现内容的转载页）
+# ---------------- 新闻 RSS 关键词 ----------------
 NEWS_QUERIES_ZH = [
-    "AI 副业 变现", "AI 赚钱 案例", "AI 变现 博主",
-    "免费 token 额度 领取", "大模型 免费额度", "AI 羊毛 白嫖",
+    "AI 副业 变现", "AI 赚钱 案例", "AI 变现 博主 拆解",
+    "AI 副业 月入 实操", "免费 token 额度 领取", "大模型 免费额度 赠送",
 ]
 NEWS_QUERIES_EN = [
     "AI side hustle income", "free LLM API credits", "creator AI monetization",
 ]
 
-# 想直连 B站 / YouTube 的博主：把 ID 填进来即可（可留空）
-# B站: 在 UP 主主页链接 space.bilibili.com/后面的数字；YouTube: 频道页源码里搜 "channel_id" 得到 UC 开头的 ID
-BILIBILI_UIDS = []          # 例: ["9469745"]
-YOUTUBE_CHANNELS = []       # 例: ["UCXuqSBlHAE6Xw-yeJA0Tunw"]
+# ---------------- 网页搜索关键词（含站内深挖） ----------------
+WEB_QUERIES = [
+    # 站内深挖：B站 / 小红书 / 抖音 / YouTube / 知乎
+    "site:bilibili.com AI 变现",
+    "site:bilibili.com AI 副业 教程",
+    "site:xiaohongshu.com AI 变现",
+    "site:xiaohongshu.com AI 副业",
+    "site:douyin.com AI 赚钱",
+    "site:youtube.com AI side hustle",
+    "site:zhihu.com AI 变现 拆解",
+    # 通用：变现路径与实操
+    "AI 变现 案例 月入 拆解",
+    "AI 副业 零成本 从0到1",
+    "AI 数字产品 模板 卖钱",
+    "AI 提示词 售卖 收入",
+    "一人公司 AI 收入",
+    # 免费额度
+    "大模型 免费 API 额度 领取",
+    "免费 token 白嫖 教程",
+]
 
-RSSHUB_BASES = ["https://rsshub.app", "https://rss.injahow.cn"]
+# 站内深挖：用阅读器代理渲染平台搜索页（B站实测可用；其余平台有登录墙，失败自动跳过）
+JINA_SEARCH_SITES = [
+    ("B站", "https://search.bilibili.com/all?keyword={kw}", "bilibili.com/video"),
+]
+JINA_SEARCH_KEYWORDS = ["AI变现", "AI副业", "AI赚钱"]
 
+# 站内直连（可选，填 ID 即生效）
+BILIBILI_UIDS = []          # 例 ["9469745"] -> rsshub 抓该 UP 主视频
+YOUTUBE_CHANNELS = []       # 例 ["UCXuqSBlHAE6Xw-yeJA0Tunw"]
+RSSHUB_BASES = ["https://rsshub.app"]
 
-def _news_sources():
-    out = []
-    for q in NEWS_QUERIES_ZH:
-        out.append({"name": f"必应新闻·{q}", "platform": "中文媒体", "type": "rss",
-                    "url": "https://www.bing.com/news/search?q=" + urllib.parse.quote(q) + "&format=RSS&setmkt=zh-CN"})
-        out.append({"name": f"谷歌新闻·{q}", "platform": "中文媒体", "type": "rss",
-                    "url": "https://news.google.com/rss/search?q=" + urllib.parse.quote(q) + "&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"})
-    for q in NEWS_QUERIES_EN:
-        out.append({"name": f"Bing News·{q}", "platform": "英文媒体", "type": "rss",
-                    "url": "https://www.bing.com/news/search?q=" + urllib.parse.quote(q) + "&format=RSS&setmkt=en-US"})
-    return out
-
-
-def _social_sources():
-    out = []
-    for uid in BILIBILI_UIDS:
-        for base in RSSHUB_BASES:
-            out.append({"name": f"B站UP{uid}", "platform": "B站", "type": "rss",
-                        "url": f"{base}/bilibili/user/video/{uid}"})
-            break
-    for ch in YOUTUBE_CHANNELS:
-        out.append({"name": f"YouTube{ch[:8]}", "platform": "YouTube", "type": "rss",
-                    "url": f"https://www.youtube.com/feeds/videos.xml?channel_id={ch}"})
-    return out
-
-
-SOURCES = _news_sources() + _social_sources() + [
-    {"name": "量子位", "platform": "公众号/网站", "type": "rss", "url": "https://www.qbitai.com/feed"},
-    {"name": "少数派", "platform": "网站", "type": "rss", "url": "https://sspai.com/feed"},
-    {"name": "爱范儿", "platform": "网站", "type": "rss", "url": "https://www.ifanr.com/feed"},
+# 额外垂类 RSS
+EXTRA_RSS = [
+    {"name": "量子位", "platform": "量子位", "url": "https://www.qbitai.com/feed"},
+    {"name": "少数派", "platform": "少数派", "url": "https://sspai.com/feed"},
+    {"name": "爱范儿", "platform": "爱范儿", "url": "https://www.ifanr.com/feed"},
+    {"name": "36氪", "platform": "36氪", "url": "https://36kr.com/feed"},
     {"name": "Hacker News", "platform": "Hacker News", "type": "hn",
      "url": "https://hn.algolia.com/api/v1/search_by_date?tags=story&hitsPerPage=30&query="},
-    {"name": "Reddit r/SideProject", "platform": "Reddit", "type": "rss", "url": "https://www.reddit.com/r/SideProject/.rss"},
 ]
 
-# HN 用多组关键词查询，提高命中
-HN_QUERIES = [
-    "AI side hustle", "free credits", "indie AI revenue",
-]
+HN_QUERIES = ["AI side hustle", "free credits", "indie AI revenue"]
 
-MONEY_KW = ["变现", "赚钱", "副业", "月入", "接单", "收入", "出单", "涨粉变现",
+LAST_LLM_ERROR = [""]   # 记录最后一次 LLM 失败原因（写进 run log）
+
+DOMAIN_PLATFORM = {
+    "bilibili.com": "B站", "b23.tv": "B站",
+    "xiaohongshu.com": "小红书", "xhslink.com": "小红书",
+    "douyin.com": "抖音", "iesdouyin.com": "抖音",
+    "youtube.com": "YouTube", "youtu.be": "YouTube",
+    "zhihu.com": "知乎", "toutiao.com": "今日头条",
+    "mp.weixin.qq.com": "公众号", "weixin.qq.com": "公众号",
+    "csdn.net": "CSDN", "juejin.cn": "掘金", "jianshu.com": "简书",
+    "36kr.com": "36氪", "sspai.com": "少数派", "ifanr.com": "爱范儿",
+    "qbitai.com": "量子位", "jiqizhixin.com": "机器之心",
+    "reddit.com": "Reddit", "news.ycombinator.com": "Hacker News",
+    "substack.com": "Substack", "medium.com": "Medium",
+    "gumroad.com": "Gumroad", "etsy.com": "Etsy", "x.com": "X",
+    "baijiahao.baidu.com": "百家号", "sohu.com": "搜狐", "163.com": "网易",
+    "qq.com": "腾讯新闻", "sina.com.cn": "新浪", "thepaper.cn": "澎湃",
+}
+
+MONEY_KW = ["变现", "赚钱", "副业", "月入", "接单", "收入", "出单", "睡后收入",
+            "怎么赚", "如何赚", "赚到", "搞钱", "兼职",
             "monetiz", "income", "revenue", "freelance", "side hustle",
-            "make money", "earning", "sold", "mrr", "arpu"]
-FREE_KW = ["免费", "白嫖", "羊毛", "额度", "体验卡", "算力券", "补贴", "送", "赠送",
+            "make money", "earning", "mrr"]
+FREE_KW = ["免费", "白嫖", "羊毛", "额度", "体验卡", "算力券", "补贴", "赠送",
            "free tier", "free credits", "free api", "free token", "coupon",
-           "voucher", "giveaway", "waive", "free plan"]
-DROP_KW = ["招聘", "salary job", "hiring"]
+           "voucher", "giveaway", "free plan"]
+DROP_KW = ["招聘", "招人", "hiring", "salary job", "骗局提示", "防骗"]
 
 
 def log(*a):
     print("[collect]", *a, flush=True)
 
 
-def http_get(url, timeout=25):
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ai-news-bot/1.0",
-        "Accept": "*/*",
-    }
+def http_get(url, timeout=25, headers=None):
+    h = {"User-Agent": UA, "Accept": "*/*", "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"}
+    if headers:
+        h.update(headers)
     if requests:
-        r = requests.get(url, headers=headers, timeout=timeout)
+        r = requests.get(url, headers=h, timeout=timeout)
         r.raise_for_status()
+        if not r.encoding or r.encoding.lower() in ("iso-8859-1",):
+            r.encoding = r.apparent_encoding or "utf-8"
         return r.text
-    req = urllib.request.Request(url, headers=headers)
+    req = urllib.request.Request(url, headers=h)
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return resp.read().decode("utf-8", "ignore")
 
 
-def clean(s, limit=220):
+def curl_get(url, headers=None, timeout=50):
+    """用系统 curl 抓取（绕开 Cloudflare 对 Python requests 的挑战）。失败返回空串。"""
+    # 注意：不要用 --compressed —— Windows 自带 curl 7.55 不支持该参数（会直接失败）
+    cmd = ["curl", "-sSL", "--max-time", str(timeout)]
+    for k, v in (headers or {}).items():
+        cmd += ["-H", f"{k}: {v}"]
+    cmd.append(url)
+    try:
+        r = subprocess.run(cmd, capture_output=True, timeout=timeout + 15)
+        if r.returncode != 0:
+            log(f"    curl rc={r.returncode} {url[:60]} {r.stderr.decode('utf-8','ignore')[:80]}")
+            return ""
+        return r.stdout.decode("utf-8", "ignore")
+    except Exception:
+        return ""
+
+
+def clean_text(s, limit=220):
     if not s:
         return ""
-    s = html.unescape(str(s))
+    s = html_mod.unescape(str(s))
     s = re.sub(r"<[^>]+>", " ", s)
     s = re.sub(r"\s+", " ", s).strip()
     return s[:limit]
 
 
+def platform_of(url):
+    try:
+        host = urllib.parse.urlparse(url).netloc.lower().lstrip("www.")
+    except Exception:
+        return ""
+    for dom, name in DOMAIN_PLATFORM.items():
+        if host.endswith(dom):
+            return name
+    return ""
+
+
+# ---------------- 抓取器 ----------------
+
 def fetch_rss(src):
     out = []
     if feedparser:
-        d = feedparser.parse(src["url"])
-        entries = d.entries or []
-        for e in entries[:40]:
-            out.append({
-                "title": clean(e.get("title"), 120),
-                "url": e.get("link", ""),
-                "desc": clean(e.get("summary") or e.get("description"), 220),
-                "published": (e.get("published") or "")[:40],
-            })
+        d = feedparser.parse(src["url"], agent=UA)
+        for e in (d.entries or [])[:40]:
+            out.append({"title": clean_text(e.get("title"), 120), "url": e.get("link", ""),
+                        "desc": clean_text(e.get("summary") or e.get("description"), 300),
+                        "published": (e.get("published") or "")[:40]})
     else:
         raw = http_get(src["url"])
-        root = ET.fromstring(re.sub(r"&(?!(amp|lt|gt|quot|apos|#\d+);)", "&amp;", raw))
-        for item in root.iter("item"):
-            t = item.findtext("title") or ""
-            l = item.findtext("link") or ""
-            de = item.findtext("description") or ""
-            out.append({"title": clean(t, 120), "url": l.strip(),
-                        "desc": clean(de, 220), "published": ""})
+        raw = re.sub(r"&(?!(amp|lt|gt|quot|apos|#\d+);)", "&amp;", raw)
+        root = ET.fromstring(raw)
+        for item in list(root.iter("item"))[:40] + list(root.iter("{http://www.w3.org/2005/Atom}entry"))[:40]:
+            def tx(tag):
+                el = item.find(tag)
+                if el is None:
+                    el = item.find("{http://www.w3.org/2005/Atom}" + tag)
+                return (el.text or "") if el is not None else ""
+            link = tx("link") or ""
+            if not link:
+                el = item.find("{http://www.w3.org/2005/Atom}link")
+                if el is not None:
+                    link = el.attrib.get("href", "")
+            out.append({"title": clean_text(tx("title"), 120), "url": link.strip(),
+                        "desc": clean_text(tx("summary") or tx("description"), 300),
+                        "published": ""})
     return [x for x in out if x["title"] and x["url"]]
+
+
+def fetch_bing_news(query, mkt="zh-CN"):
+    url = ("https://www.bing.com/news/search?q=" + urllib.parse.quote(query)
+           + "&format=RSS&setmkt=" + mkt)
+    raw = http_get(url)
+    out = []
+    for m in re.finditer(r"<item>(.*?)</item>", raw, re.S):
+        blk = m.group(1)
+        t = re.search(r"<title>(.*?)</title>", blk, re.S)
+        l = re.search(r"<link>(.*?)</link>", blk, re.S)
+        d = re.search(r"<description>(.*?)</description>", blk, re.S)
+        if t and l:
+            out.append({"title": clean_text(t.group(1), 120), "url": l.group(1).strip(),
+                        "desc": clean_text(d.group(1) if d else "", 300), "published": ""})
+    return out
+
+
+def fetch_google_news(query):
+    url = ("https://news.google.com/rss/search?q=" + urllib.parse.quote(query)
+           + "&hl=zh-CN&gl=CN&ceid=CN:zh-Hans")
+    items = fetch_rss({"url": url})
+    for it in items:                      # 解出真实文章链接，否则抓不到正文
+        if "news.google.com" in it["url"]:
+            it["url"] = gnews_real_url(it["url"])
+    return items
+
+
+def fetch_web_search(query):
+    """必应网页搜索 + DuckDuckGo 兜底（含 site: 站内检索）。"""
+    out = []
+    # 1) 必应
+    for host in ("https://www.bing.com", "https://cn.bing.com"):
+        try:
+            raw = http_get(host + "/search?q=" + urllib.parse.quote(query) + "&count=20")
+            blocks = re.findall(r'<li class="b_algo".*?(?=<li class="b_algo"|</ol>)', raw, re.S)
+            for b in blocks:
+                t = re.search(r"<h2[^>]*>(.*?)</h2>", b, re.S)
+                u = re.search(r'href="(https?://[^"]+)"', b)
+                p = re.search(r'<p[^>]*>(.*?)</p>', b, re.S)
+                if not (t and u):
+                    continue
+                url = html_mod.unescape(u.group(1))
+                if "bing.com" in url or "microsoft.com/en-us/bing" in url:
+                    continue
+                out.append({"title": clean_text(t.group(1), 120), "url": url,
+                            "desc": clean_text(p.group(1) if p else "", 300), "published": ""})
+            if out:
+                log(f"    bing ok ({host.split('//')[1]}): {len(out)}")
+                break
+        except Exception as e:
+            log(f"    bing fail {host}: {e}")
+    # 2) DuckDuckGo 兜底（国内可能不通，美国机房可用）
+    if not out:
+        try:
+            raw = http_get("https://html.duckduckgo.com/html/?q=" + urllib.parse.quote(query))
+            for m in re.finditer(r'<a rel="nofollow" class="result__a" href="([^"]+)"[^>]*>(.*?)</a>', raw, re.S):
+                url, title = html_mod.unescape(m.group(1)), clean_text(m.group(2), 120)
+                if url.startswith("//duckduckgo.com/l/?uddg="):
+                    url = urllib.parse.unquote(url.split("uddg=")[1].split("&")[0])
+                if title and url.startswith("http"):
+                    out.append({"title": title, "url": url, "desc": "", "published": ""})
+            if out:
+                log(f"    ddg ok: {len(out)}")
+        except Exception as e:
+            log(f"    ddg fail: {e}")
+    return out
+
+
+def fetch_jina_search(site_name, url_tpl, kw, domain_filter):
+    """用阅读器代理渲染平台搜索页，解析 markdown 链接（B站等站内深挖）。"""
+    url = url_tpl.replace("{kw}", urllib.parse.quote(kw))
+    if not requests:
+        return []
+    _jina_pace()
+    t = curl_get("https://r.jina.ai/" + url,
+                 headers={"Accept": "text/plain", "X-Return-Format": "markdown"},
+                 timeout=55)
+    if not t:
+        return []
+    out, seen = [], set()
+    for m in re.finditer(r"\[([^\]]{8,90})\]\((https?://[^)\s]+)\)", t):
+        title, link = m.group(1).strip(), m.group(2).strip()
+        if domain_filter not in link or link in seen:
+            continue
+        seen.add(link)
+        out.append({"title": clean_text(title, 120), "url": link, "desc": "", "published": ""})
+    log(f"    jina search {site_name}「{kw}」: {len(out)}")
+    return out
+
+
+def gnews_real_url(u):
+    """谷歌新闻的跳转链接里 base64 藏着真实文章地址，解出来才能抓正文。"""
+    import base64
+    m = re.search(r"/articles/([A-Za-z0-9_\-]+)", u)
+    if not m:
+        return u
+    s = m.group(1).replace("-", "+").replace("_", "/")
+    s += "=" * (-len(s) % 4)
+    try:
+        raw = base64.b64decode(s)
+    except Exception:
+        return u
+    found = re.findall(rb"https?://[^\x00-\x20\"\'<>]+", raw)
+    if not found:
+        return u
+    return found[0].decode("utf-8", "ignore").rstrip("\\")
 
 
 def fetch_hn(src):
     out = []
     for q in HN_QUERIES:
         try:
-            txt = http_get(src["url"] + urllib.parse.quote(q))
-            data = json.loads(txt)
+            data = json.loads(http_get(src["url"] + urllib.parse.quote(q)))
             for h in data.get("hits", [])[:10]:
-                url = h.get("url") or ("https://news.ycombinator.com/item?id=" + str(h.get("objectID", "")))
                 if not h.get("title"):
                     continue
-                out.append({
-                    "title": clean(h["title"], 120),
-                    "url": url,
-                    "desc": clean(h.get("story_text") or (h.get("comment_text") or ""), 220),
-                    "published": (h.get("created_at") or "")[:40],
-                })
+                url = h.get("url") or ("https://news.ycombinator.com/item?id=" + str(h.get("objectID", "")))
+                out.append({"title": clean_text(h["title"], 120), "url": url,
+                            "desc": clean_text(h.get("story_text") or "", 300), "published": ""})
         except Exception as e:
-            log("HN query failed:", q, e)
+            log("    HN query failed:", q, e)
     return out
 
 
+_JINA_LOCK = threading.Lock()
+_JINA_LAST = [0.0]
+
+
+def _jina_pace():
+    """控制 jina 调用频率（免费档约 20 次/分钟）。"""
+    with _JINA_LOCK:
+        wait = 3.2 - (time.time() - _JINA_LAST[0])
+        if wait > 0:
+            time.sleep(wait)
+        _JINA_LAST[0] = time.time()
+
+
+def fetch_jina(url):
+    """用 r.jina.ai 阅读器代理抓正文（免费、无需 key）。走 curl 通道避开 Cloudflare。"""
+    text = ""
+    for attempt in (1, 2):
+        _jina_pace()
+        text = curl_get("https://r.jina.ai/" + url,
+                        headers={"Accept": "text/plain", "X-Return-Format": "text"},
+                        timeout=45)
+        if text:
+            break
+        if attempt == 1:
+            time.sleep(4)
+    if not text:
+        return ""
+    if "Markdown Content:" in text:
+        text = text.split("Markdown Content:", 1)[1]
+    text = re.sub(r"^(Title|URL Source|Published Time|Markdown Content)\s*:.*$", " ", text, flags=re.M)
+    text = re.sub(r"!\[[^\]]*\]\([^)]*\)", " ", text)
+    text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)
+    text = re.sub(r"[#*>`|]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:1600]
+
+
+def fetch_article_text(url):
+    """抓原文正文，返回纯文本（最多 1600 字）：先直连，失败或太短再用 jina 代理。"""
+    direct = ""
+    try:
+        if requests:
+            r = requests.get(url, headers={"User-Agent": UA, "Accept-Language": "zh-CN,zh;q=0.9"},
+                             timeout=12, stream=True)
+            if r.status_code == 200:
+                r.encoding = r.apparent_encoding or r.encoding or "utf-8"
+                raw = r.raw.read(400_000, decode_content=True)
+                page = raw.decode(r.encoding, "ignore")
+                page = re.sub(r"(?is)<(script|style|noscript|svg|iframe|nav|footer|header)[^>]*>.*?</\1>", " ", page)
+                m = (re.search(r"(?is)<article[^>]*>(.*?)</article>", page)
+                     or re.search(r'(?is)<div[^>]+(?:id|class)="[^"]*(?:content|article|post|detail|main)[^"]*"[^>]*>(.*?)</div>', page))
+                seg = m.group(1) if m else page
+                txt = re.sub(r"(?s)<[^>]+>", " ", seg)
+                txt = html_mod.unescape(txt)
+                txt = re.sub(r"\s+", " ", txt).strip()
+                txt = re.sub(r"(版权所有|免责声明|扫码关注|点击查看更多|相关阅读).*$", "", txt)
+                direct = txt[:1600]
+    except Exception:
+        direct = ""
+    if len(direct) >= 350:
+        return direct
+    jina = fetch_jina(url)
+    return jina if len(jina) > len(direct) else direct
+
+
+# ---------------- 分类与组装 ----------------
+
 def classify(title, desc):
-    """无 LLM 时的规则分类。返回 category 或 None。"""
     text = (title + " " + desc).lower()
     if any(k in text for k in DROP_KW):
         return None
@@ -205,47 +430,143 @@ def classify(title, desc):
 
 
 def collect_candidates():
-    seen_urls = set()
-    candidates = []
-    for src in SOURCES:
+    seen, cands, stats = set(), [], {}
+
+    def push(items, source, platform, cap, allow_platform_infer=True, restrict_domain=None):
+        kept = 0
+        for it in items:
+            u = it["url"].rstrip("/")
+            if u in seen:
+                continue
+            if restrict_domain:
+                host = urllib.parse.urlparse(u).netloc.lower()
+                if restrict_domain not in host:
+                    continue          # site: 检索时严格限定域名，保证"真·站内"
+            seen.add(u)
+            cat = classify(it["title"], it["desc"])
+            if not cat:
+                continue
+            plat = platform_of(u) if allow_platform_infer else ""
+            cands.append({"title": it["title"], "url": it["url"],
+                          "source": plat or platform or source,
+                          "platform": plat or platform, "category": cat, "desc": it["desc"]})
+            kept += 1
+            if kept >= cap:
+                break
+        return kept
+
+    # 1) 新闻 RSS（中英）
+    for q in NEWS_QUERIES_ZH:
+        for fn, label in ((fetch_bing_news, "必应新闻"), (fetch_google_news, "谷歌新闻")):
+            key = f"{label}·{q}"
+            try:
+                n = push(fn(q), key, "新闻媒体", RSS_CAP)
+                stats[key] = n
+                log(f"  {key} -> {n}")
+            except Exception as e:
+                stats[key] = -1
+                log(f"  {key} FAILED: {e}")
+    for q in NEWS_QUERIES_EN:
         try:
-            if src["type"] == "rss":
-                items = fetch_rss(src)
-            else:
-                items = fetch_hn(src)
-            cap = HN_CAP if src["type"] == "hn" else PER_SOURCE_CAP
-            kept = 0
-            for it in items:
-                key = it["url"].rstrip("/")
-                if key in seen_urls:
-                    continue
-                seen_urls.add(key)
-                cat = classify(it["title"], it["desc"])
-                if not cat:
-                    continue
-                candidates.append({
-                    "title": it["title"], "url": it["url"],
-                    "source": src["name"], "platform": src["platform"],
-                    "category": cat, "desc": it["desc"],
-                })
-                kept += 1
-                if kept >= cap:
-                    break
-            log(f"source {src['name']}: {len(items)} fetched, {kept} candidates")
+            n = push(fetch_bing_news(q, "en-US"), f"Bing News·{q}", "英文媒体", RSS_CAP)
+            stats[f"BingNews·{q}"] = n
+            log(f"  BingNews「{q}」-> {n}")
         except Exception as e:
-            log(f"source {src['name']} FAILED: {e}")
-    return candidates
+            stats[f"BingNews·{q}"] = -1
+            log(f"  BingNews「{q}」FAILED: {e}")
+
+    # 2) 网页搜索（含 site: 站内深挖，严格限定域名）
+    for q in WEB_QUERIES:
+        key = f"网页搜索·{q}"
+        try:
+            dom = None
+            m = re.search(r"site:([a-z0-9.\-]+)", q)
+            if m:
+                dom = m.group(1)
+            n = push(fetch_web_search(q), key, "", WEB_CAP * 3, allow_platform_infer=False,
+                     restrict_domain=dom)
+            stats[key] = n
+            log(f"  {key} -> {n}")
+        except Exception as e:
+            stats[key] = -1
+            log(f"  {key} FAILED: {e}")
+
+    # 2.5) 站内深挖（B站等，经阅读器渲染）
+    for site_name, tpl, dom in JINA_SEARCH_SITES:
+        for kw in JINA_SEARCH_KEYWORDS:
+            key = f"{site_name}站内·{kw}"
+            try:
+                n = push(fetch_jina_search(site_name, tpl, kw, dom), key, site_name,
+                         WEB_CAP * 2, allow_platform_infer=False)
+                stats[key] = n
+                log(f"  {key} -> {n}")
+            except Exception as e:
+                stats[key] = -1
+                log(f"  {key} FAILED: {e}")
+
+    # 3) 垂类 RSS + HN
+    for src in EXTRA_RSS:
+        try:
+            items = fetch_hn(src) if src.get("type") == "hn" else fetch_rss(src)
+            cap = HN_CAP if src.get("type") == "hn" else RSS_CAP
+            n = push(items, src["name"], src["platform"], cap)
+            stats[src["name"]] = n
+            log(f"  {src['name']} -> {n}")
+        except Exception as e:
+            stats[src["name"]] = -1
+            log(f"  {src['name']} FAILED: {e}")
+
+    # 4) B站/YouTube 博主直连（配置了才跑）
+    for uid in BILIBILI_UIDS:
+        for base in RSSHUB_BASES:
+            try:
+                n = push(fetch_rss({"url": f"{base}/bilibili/user/video/{uid}"}), f"B站UP{uid}", "B站", RSS_CAP)
+                stats[f"B站UP{uid}"] = n
+                log(f"  B站 UP{uid} -> {n}")
+                break
+            except Exception as e:
+                log(f"  B站 UP{uid} FAILED({base}): {e}")
+    for ch in YOUTUBE_CHANNELS:
+        try:
+            n = push(fetch_rss({"url": f"https://www.youtube.com/feeds/videos.xml?channel_id={ch}"}),
+                     f"YouTube {ch[:8]}", "YouTube", RSS_CAP)
+            stats[f"YouTube {ch[:8]}"] = n
+            log(f"  YouTube {ch[:8]} -> {n}")
+        except Exception as e:
+            log(f"  YouTube {ch[:8]} FAILED: {e}")
+
+    return cands, stats
+
+
+def enrich(cands):
+    """抓正文，解决摘要干瘪。优先 money/free。直连不行就用 jina 代理。"""
+    order = {"money": 0, "free": 1}
+    cands = sorted(cands, key=lambda c: order.get(c["category"], 2))
+    targets = cands[:ENRICH_MAX]
+
+    def work(c):
+        if len(c["desc"]) >= 600:
+            return
+        txt = fetch_article_text(c["url"])
+        if len(txt) > len(c["desc"]):
+            c["desc"] = txt
+
+    with ThreadPoolExecutor(max_workers=ENRICH_WORKERS) as ex:
+        list(ex.map(work, targets))
+    got = sum(1 for c in targets if len(c["desc"]) > 300)
+    log(f"  正文抓取: {got}/{len(targets)} 条拿到 >300 字正文")
+    return cands, got
 
 
 def existing_urls():
-    """近 7 天已发布的 url，用于去重。"""
     urls = set()
     if not DAILY.exists():
         return urls
+    cutoff = (datetime.datetime.now(TZ) - datetime.timedelta(days=7)).strftime("%Y-%m-%d")
     for f in DAILY.glob("*.json"):
         try:
             d = json.loads(f.read_text(encoding="utf-8"))
-            if d.get("date", "") >= (datetime.datetime.now(TZ) - datetime.timedelta(days=7)).strftime("%Y-%m-%d"):
+            if d.get("date", "") >= cutoff:
                 for it in d.get("items", []):
                     if it.get("url"):
                         urls.add(it["url"].rstrip("/"))
@@ -254,116 +575,122 @@ def existing_urls():
     return urls
 
 
-def llm_pick(candidates):
-    """调用 GLM-4-Flash 从候选中挑选并生成日报条目。失败返回 None。"""
+# ---------------- LLM ----------------
+
+def llm_call(cands, limit, desc_len, max_tokens, model, api_key):
+    pool = [{"i": i, "title": c["title"], "url": c["url"], "site": c["source"],
+             "text": c["desc"][:desc_len]} for i, c in enumerate(cands[:limit])]
+    sys_prompt = (
+        "你是「AI 变现日报」的主编。读者是想用 AI 赚钱的普通人，不是企业。\n"
+        "任务：从候选条目里挑出 12-18 条，写成中文日报。硬性要求：\n"
+        "1) category 四选一：money（个人用 AI 变现的路径/案例，占比最高）、free（免费 Token/API 额度/算力券/补贴，"
+        "要写清领取方式与截止日期）、industry（行业动态）、tip（避坑/实操）。\n"
+        "2) money 类必须填全：difficulty（低/中/高）、amount（文中提到的赚到多少钱，如『月入 3000 元』；"
+        "没写就填『未披露』）、cycle（变现周期，如『2-4 周见第一单』；没写就按 article 内容推断并注明『约』）、"
+        "takeaway（40-70 字小结：赚的是谁的钱、核心逻辑）、"
+        "steps（3-5 步入手流程，一行文字用①②③④⑤连接）、platform（抖音/小红书/B站/YouTube/知乎 等）。\n"
+        "3) summary 必须 80-160 字。有 text 正文时基于正文写；正文很短时，基于标题与站点信息写一段"
+        "有信息量的中文摘要（可用行业常识补充背景，但**严禁编造具体数字、金额、日期、机构名**，缺失就写『原文未披露』）。\n"
+        "4) action：一句话可执行动作（例如『今晚就去闲鱼搜 XX 看需求』），所有类别都尽量填。\n"
+        "5) takeaway 与 steps 属于编辑建议（不是事实陈述），可基于行业常识给出，务必具体可执行。\n"
+        "6) 来源多样性：整期条目需来自至少 4 个不同站点；Hacker News 与 Reddit 合计最多 2 条。\n"
+        "7) url 必须原样使用候选里的 url，禁止编造。\n"
+        "8) 只输出 JSON 数组，无任何其他文字。字段："
+        '{"category","title","summary","source","url","tags":[],"platform","difficulty","amount",'
+        '"cycle","takeaway","steps","action"}。非 money 类的 platform/difficulty/amount/cycle/takeaway/steps 可为空串。\n'
+        "9) 与 AI 变现无关、信息量不足、纯广告的候选直接丢弃。"
+    )
+    body = {"model": model, "messages": [
+        {"role": "system", "content": sys_prompt},
+        {"role": "user", "content": "候选条目：\n" + json.dumps(pool, ensure_ascii=False)}],
+        "temperature": 0.3, "max_tokens": max_tokens}
+    r = requests.post("https://open.bigmodel.cn/api/paas/v4/chat/completions",
+                      headers={"Authorization": "Bearer " + api_key, "Content-Type": "application/json"},
+                      json=body, timeout=240)
+    if r.status_code == 429:
+        raise RuntimeError("rate limited (429)")
+    r.raise_for_status()
+    j = r.json()
+    choice = j["choices"][0]
+    content = choice["message"]["content"]
+    if choice.get("finish_reason") == "length":
+        log("    LLM 输出被 max_tokens 截断，本次结果可能不完整")
+    log(f"    LLM tokens: {j.get('usage')}")
+    m = re.search(r"\[.*\]", content, re.S)
+    if not m:
+        raise RuntimeError("no JSON array in response")
+    return json.loads(m.group(0))
+
+
+def llm_pick(cands):
     api_key = os.environ.get("ZHIPU_API_KEY", "").strip()
     if not api_key or not requests:
+        log("  no ZHIPU_API_KEY -> rule mode")
         return None
     model = os.environ.get("ZHIPU_MODEL", "glm-4-flash").strip()
-
-    pool = []
-    for i, c in enumerate(candidates):
-        pool.append({"i": i, "title": c["title"], "url": c["url"],
-                     "source": c["source"], "desc": c["desc"][:150]})
-
-    sys_prompt = (
-        "你是「AI 变现日报」的编辑。站点面向想用 AI 赚钱的个人/独立创作者，"
-        "严禁把企业级/公司主体的商业化新闻当成个人变现路径。\n"
-        "从候选条目中挑选 12-20 条生成日报，规则：\n"
-        "1. category 四选一：money(个人用AI变现的路径/案例，占比最高，优先选中文媒体和社媒博主内容)、"
-        "free(免费Token/API额度/算力券/补贴，注明截止日期)、industry(行业动态)、tip(避坑实操)。\n"
-        "2. money 类必填：difficulty(低/中/高)、amount(博主已赚金额区间，如 $300-2000/月，原文没披露就写'未披露，同类约 …')、"
-        "cycle(变现周期如 2-4 周)、takeaway(变现方式小结，40-70字，讲清赚的是谁的钱)、"
-        "steps(新手入手步骤，3-5步一行文字，用①②③④⑤连接)。没有依据的数字保守估计，禁止夸大。\n"
-        "3. 来源配额：Hacker News / Reddit 的条目全场合计最多 2 条，其余名额给中文来源。\n"
-        "4. summary 用中文 80-160 字，保留原文关键数字；title 用中文重写，不超 30 字。\n"
-        "5. url 必须原样使用候选里的 url，禁止编造。\n"
-        "6. 只输出 JSON 数组，不要输出任何其他文字。每项字段："
-        '{"category","title","summary","source","url","tags":[],"platform","difficulty","amount","cycle","takeaway","steps"}'
-        "，其中非 money 类的 platform/difficulty/amount/cycle/takeaway/steps 可为空字符串。\n"
-        "7. 信息量不足或与主题无关的候选直接丢弃。"
-    )
-    body = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": sys_prompt},
-            {"role": "user", "content": "候选条目：\n" + json.dumps(pool, ensure_ascii=False)},
-        ],
-        "temperature": 0.3,
-        "max_tokens": 8000,
-    }
-    try:
-        r = requests.post(
-            "https://open.bigmodel.cn/api/paas/v4/chat/completions",
-            headers={"Authorization": "Bearer " + api_key,
-                     "Content-Type": "application/json"},
-            json=body, timeout=180,
-        )
-        r.raise_for_status()
-        content = r.json()["choices"][0]["message"]["content"]
-        m = re.search(r"\[.*\]", content, re.S)
-        if not m:
-            log("LLM returned no JSON array")
-            return None
-        items = json.loads(m.group(0))
-        valid_urls = {c["url"].rstrip("/") for c in candidates}
-        ok = []
-        for it in items:
-            if not it.get("url") or it["url"].rstrip("/") not in valid_urls:
-                continue
-            if it.get("category") not in ("money", "free", "industry", "tip"):
-                continue
-            it.setdefault("tags", [])
-            it.setdefault("platform", "")
-            it.setdefault("difficulty", "")
-            it.setdefault("amount", "")
-            it.setdefault("cycle", "")
-            it.setdefault("takeaway", "")
-            it.setdefault("steps", "")
-            ok.append(it)
-        log(f"LLM mode: {len(ok)} items accepted")
-        return ok or None
-    except Exception as e:
-        log("LLM call failed:", e)
-        return None
+    attempts = [(40, 1000, 4000), (20, 500, 3000)]
+    for idx, (limit, dlen, mtok) in enumerate(attempts, 1):
+        try:
+            raw = llm_call(cands, limit, dlen, mtok, model, api_key)
+            valid = {c["url"].rstrip("/") for c in cands}
+            ok = []
+            for it in raw:
+                if not it.get("url") or it["url"].rstrip("/") not in valid:
+                    continue
+                if it.get("category") not in ("money", "free", "industry", "tip"):
+                    continue
+                for k in ("tags", "platform", "difficulty", "amount", "cycle",
+                          "takeaway", "steps", "action"):
+                    if k == "tags":
+                        it.setdefault("tags", [])
+                    else:
+                        it.setdefault(k, "")
+                ok.append(it)
+            if ok:
+                LAST_LLM_ERROR[0] = ""
+                log(f"  LLM 尝试{idx} 成功：{len(ok)} 条")
+                return ok
+            LAST_LLM_ERROR[0] = f"attempt{idx}: 0 valid items"
+            log(f"  LLM 尝试{idx} 返回 0 条有效数据")
+        except Exception as e:
+            LAST_LLM_ERROR[0] = f"attempt{idx}: {e}"
+            log(f"  LLM 尝试{idx} 失败：{e}")
+    return None
 
 
-def fallback_items(candidates):
-    """无 LLM：规则分类 + 截断摘要（内容全部来自真实抓取，不编造）。"""
+def fallback_items(cands):
     items = []
-    for c in candidates:
-        items.append({
-            "category": c["category"],
-            "title": c["title"],
-            "summary": c["desc"] or "(来源未提供摘要，点击原文查看)",
-            "source": c["source"],
-            "url": c["url"],
-            "tags": [],
-            "platform": c["platform"],
-            "difficulty": "", "amount": "", "cycle": "",
-            "takeaway": "", "steps": "",
-        })
-    return items[:MAX_ITEMS]
+    for c in cands[:MAX_ITEMS]:
+        body = c["desc"] or ""
+        summary = body[:180] if body else "(来源未提供摘要，点击原文查看)"
+        items.append({"category": c["category"], "title": c["title"], "summary": summary,
+                      "source": c["source"], "url": c["url"], "tags": [],
+                      "platform": c["platform"], "difficulty": "", "amount": "", "cycle": "",
+                      "takeaway": "", "steps": "", "action": ""})
+    return items
 
+
+# ---------------- 写盘 ----------------
 
 def write_report(items, mode):
     n = len(items)
     cnt = {}
     for it in items:
         cnt[it["category"]] = cnt.get(it["category"], 0) + 1
+    sites = {it.get("source", "") for it in items}
     report = {
         "date": TODAY,
         "title": f"AI 变现日报 - {TODAY}",
         "generatedAt": NOW_ISO,
         "itemCount": n,
-        "summary": (f"云端自动生成（{'AI 编辑' if mode == 'llm' else '聚合'}模式）："
+        "summary": (f"{'AI 编辑' if mode == 'llm' else '自动聚合'}模式："
                     f"变现路径 {cnt.get('money', 0)} 条 · 免费额度 {cnt.get('free', 0)} 条 · "
-                    f"行业动态 {cnt.get('industry', 0)} 条 · 避坑 {cnt.get('tip', 0)} 条。"),
+                    f"行业 {cnt.get('industry', 0)} 条 · 避坑 {cnt.get('tip', 0)} 条，"
+                    f"覆盖 {len(sites)} 个来源站点。"),
         "items": items,
     }
     DAILY.mkdir(parents=True, exist_ok=True)
-    (DAILY / f"{TODAY}.json").write_text(
-        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    (DAILY / f"{TODAY}.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
 
     idx_path = DATA / "index.json"
     idx = {"latest": TODAY, "updatedAt": NOW_ISO, "dates": [], "issues": []}
@@ -376,62 +703,90 @@ def write_report(items, mode):
     issues = [x for x in idx.get("issues", []) if x.get("date") != TODAY]
     issues.append({"date": TODAY, "title": report["title"], "itemCount": n})
     issues.sort(key=lambda x: x["date"], reverse=True)
-    issues = issues[:KEEP_DAYS]
-    keep = set(dates)
-    idx.update({"latest": TODAY, "updatedAt": NOW_ISO,
-                "dates": dates, "issues": issues})
+    idx.update({"latest": TODAY, "updatedAt": NOW_ISO, "dates": dates, "issues": issues[:KEEP_DAYS]})
     idx_path.write_text(json.dumps(idx, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    # 清理超过 30 期的旧文件
-    if DAILY.exists():
-        for f in DAILY.glob("*.json"):
-            if f.stem < (datetime.datetime.now(TZ) - datetime.timedelta(days=KEEP_DAYS)).strftime("%Y-%m-%d"):
-                f.unlink()
+    for f in DAILY.glob("*.json"):
+        if f.stem < (datetime.datetime.now(TZ) - datetime.timedelta(days=KEEP_DAYS)).strftime("%Y-%m-%d"):
+            f.unlink()
+    log("report written:", TODAY, n, "items, sites:", len(sites))
 
-    log("report written:", TODAY, n, "items; dates kept:", len(dates), "keep set:", len(keep))
+
+def write_run_log(stats, cand_count, got_body, mode, note):
+    """把本次运行诊断写进仓库，方便远程排查（无需 Actions 日志权限）。"""
+    try:
+        logpath = DATA / "run-log.json"
+        payload = {
+            "date": TODAY,
+            "runAt": NOW_ISO,
+            "mode": mode,
+            "candidates": cand_count,
+            "articlesFetched": got_body,
+            "sources": stats,
+            "note": note,
+        }
+        logpath.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        log("run-log written")
+    except Exception as e:
+        log("run-log write failed:", e)
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument("--force", action="store_true",
-                    help="当天日报已存在时强制重新生成")
+    ap.add_argument("--force", action="store_true")
     args = ap.parse_args()
 
     log("date:", TODAY)
-
-    # 当天已有日报 -> 跳过（防止一天内的第二次定时触发覆盖/重复）
     today_file = DAILY / f"{TODAY}.json"
     if today_file.exists() and not args.force and not args.dry_run:
-        log("today's report already exists -> skip (用 --force 可强制重生成)")
-        return
+        # 质量自愈：如果当天日报摘要过短 / 没有新手指南，说明是低质量产物，自动重生成
+        try:
+            prev = json.loads(today_file.read_text(encoding="utf-8"))
+            items_prev = prev.get("items", [])
+            lens = [len(i.get("summary", "")) for i in items_prev] or [0]
+            avg = sum(lens) / len(lens)
+            guide = sum(1 for i in items_prev if i.get("takeaway") or i.get("steps"))
+        except Exception:
+            avg, guide = 0, 0
+        if avg >= 60 and guide > 0:
+            log(f"today's report exists and looks fine (avg summary {avg:.0f} 字, 指南 {guide} 条) -> skip")
+            return
+        log(f"today's report quality low (avg summary {avg:.0f} 字, 指南 {guide} 条) -> 自动重生成")
 
-    candidates = collect_candidates()
-    log("total candidates:", len(candidates))
+    cands, stats = collect_candidates()
+    log("candidates:", len(cands))
+    by_src = {}
+    for c in cands:
+        by_src[c["source"]] = by_src.get(c["source"], 0) + 1
+    log("source distribution:", by_src)
 
     seen = existing_urls()
-    candidates = [c for c in candidates if c["url"].rstrip("/") not in seen]
-    log("after dedup vs last 7 days:", len(candidates))
-    if len(candidates) < MIN_ITEMS:
-        log(f"warning: candidates < {MIN_ITEMS}, today's report will be thin (真实数据有多少发多少，不凑数)")
-
-    if not candidates:
-        log("NO candidates today -> skip (旧一期保留，不生成空日报)")
+    cands = [c for c in cands if c["url"].rstrip("/") not in seen]
+    log("after dedup:", len(cands))
+    if not cands:
+        log("NO candidates -> skip")
+        write_run_log(stats, 0, 0, "skip", "无新增候选")
         return
+    if len(cands) < MIN_ITEMS:
+        log(f"warning: only {len(cands)} candidates, report will be thin")
 
-    items = llm_pick(candidates)
+    cands, got_body = enrich(cands)
+
+    items = llm_pick(cands)
     mode = "llm"
     if not items:
-        log("falling back to rule-based mode")
-        items = fallback_items(candidates)
+        items = fallback_items(cands)
         mode = "rule"
 
     if args.dry_run:
-        log("DRY-RUN: would write", len(items), "items, mode =", mode)
-        for it in items[:5]:
-            log("  -", it["category"], it["title"][:40])
+        log(f"DRY-RUN: {len(items)} items, mode={mode}")
+        for it in items[:8]:
+            log("  -", it["category"], "|", it.get("source"), "|", it["title"][:38],
+                "| 摘要", len(it.get("summary", "")), "字")
         return
 
+    write_run_log(stats, len(cands), got_body, mode, LAST_LLM_ERROR[0])
     write_report(items, mode)
 
 

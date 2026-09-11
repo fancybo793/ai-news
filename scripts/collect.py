@@ -141,6 +141,27 @@ FREE_KW = ["免费", "白嫖", "羊毛", "额度", "体验卡", "算力券", "�
 DROP_KW = ["招聘", "招人", "hiring", "salary job", "骗局提示", "防骗"]
 
 
+# 智谱风控容易误伤的措辞：只在"喂给模型"的输入里软化，页面上仍显示原始标题
+SOFTEN_MAP = {"白嫖": "免费获取", "薅羊毛": "免费额度", "薅": "领取", "羊毛": "免费额度",
+              "搞钱": "赚钱", "割韭菜": "风险", "骗局": "风险提示"}
+
+# API 错误/风控标记：出现即视为本次调用失败，绝不能写进日报
+BAD_MARKERS = ("abusealleviation", "abuse_alleviation", "系统检测到", "敏感内容",
+               "error_code", "errorcode", "invalid api key", "authentication")
+
+
+def soften(text):
+    t = str(text or "")
+    for k, v in SOFTEN_MAP.items():
+        t = t.replace(k, v)
+    return t
+
+
+def has_bad_marker(*fields):
+    blob = " ".join(str(f or "") for f in fields).lower()
+    return any(m in blob for m in BAD_MARKERS)
+
+
 def log(*a):
     print("[collect]", *a, flush=True)
 
@@ -604,8 +625,8 @@ def existing_urls():
 # ---------------- LLM ----------------
 
 def llm_call(cands, limit, desc_len, max_tokens, model, api_key):
-    pool = [{"i": i, "title": c["title"], "url": c["url"], "site": c["source"],
-             "text": c["desc"][:desc_len]} for i, c in enumerate(cands[:limit])]
+    pool = [{"i": i, "title": soften(c["title"]), "url": c["url"], "site": c["source"],
+             "text": soften(c["desc"])[:desc_len]} for i, c in enumerate(cands[:limit])]
     sys_prompt = (
         "你是「AI 变现日报」的主编。读者是想用 AI 赚钱的普通人，不是企业。\n"
         "任务：从候选条目里挑出 12-18 条，写成中文日报。硬性要求：\n"
@@ -642,9 +663,11 @@ def llm_call(cands, limit, desc_len, max_tokens, model, api_key):
     if choice.get("finish_reason") == "length":
         log("    LLM 输出被 max_tokens 截断，本次结果可能不完整")
     log(f"    LLM tokens: {j.get('usage')}")
+    if has_bad_marker(content):
+        raise RuntimeError("API 返回风控/错误标记: " + content[:160].replace("\n", " "))
     m = re.search(r"\[.*\]", content, re.S)
     if not m:
-        raise RuntimeError("no JSON array in response")
+        raise RuntimeError("no JSON array in response: " + content[:160].replace("\n", " "))
     return json.loads(m.group(0))
 
 
@@ -659,12 +682,16 @@ def llm_pick(cands):
         try:
             raw = llm_call(cands, limit, dlen, mtok, model, api_key)
             valid = {c["url"].rstrip("/") for c in cands}
-            ok = []
+            ok, dropped = [], 0
             for it in raw:
                 if not it.get("url") or it["url"].rstrip("/") not in valid:
                     continue
                 if it.get("category") not in ("money", "free", "industry", "tip"):
                     continue
+                if has_bad_marker(it.get("summary"), it.get("title"), it.get("takeaway"),
+                                  it.get("steps"), it.get("action")):
+                    dropped += 1
+                    continue          # 含风控/错误文本的条目直接丢弃
                 for k in ("tags", "platform", "difficulty", "amount", "cycle",
                           "takeaway", "steps", "action"):
                     if k == "tags":
@@ -672,10 +699,14 @@ def llm_pick(cands):
                     else:
                         it.setdefault(k, "")
                 ok.append(it)
-            if ok:
+            if dropped:
+                log(f"  已丢弃含错误标记的条目 {dropped} 条")
+            if ok and len(ok) >= 6:
                 LAST_LLM_ERROR[0] = ""
                 log(f"  LLM 尝试{idx} 成功：{len(ok)} 条")
                 return ok
+            if ok:
+                log(f"  有效条目仅 {len(ok)} 条，过少，视为失败")
             LAST_LLM_ERROR[0] = f"attempt{idx}: 0 valid items"
             log(f"  LLM 尝试{idx} 返回 0 条有效数据")
         except Exception as e:
@@ -699,6 +730,12 @@ def fallback_items(cands):
 # ---------------- 写盘 ----------------
 
 def write_report(items, mode):
+    # 最后一道防线：任何含错误标记的条目都不允许出现在页面上
+    clean = [it for it in items
+             if not has_bad_marker(it.get("summary"), it.get("title"), it.get("takeaway"), it.get("steps"))]
+    if len(clean) != len(items):
+        log(f"  写盘前剔除了 {len(items) - len(clean)} 条含错误标记的条目")
+    items = clean
     n = len(items)
     cnt = {}
     for it in items:

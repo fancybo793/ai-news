@@ -643,51 +643,100 @@ def existing_urls():
 
 # ---------------- LLM ----------------
 
-def llm_call(cands, limit, desc_len, max_tokens, model, api_key):
+def parse_items(content):
+    """从模型输出里取出条目数组：支持 JSON 模式、```json 围栏、以及被截断时逐个对象抢救。"""
+    t = (content or "").strip()
+    t = re.sub(r"^```(?:json)?|```$", "", t, flags=re.M).strip()
+    cands = [t]
+    if "{" in t and "}" in t:
+        cands.append(t[t.find("{"): t.rfind("}") + 1])
+    if "[" in t and "]" in t:
+        cands.append(t[t.find("["): t.rfind("]") + 1])
+    for c in cands:
+        if not c:
+            continue
+        try:
+            obj = json.loads(c)
+        except Exception:
+            continue
+        if isinstance(obj, dict):
+            for key in ("items", "data", "list", "results"):
+                if isinstance(obj.get(key), list):
+                    return obj[key]
+        if isinstance(obj, list):
+            return obj
+    # 截断抢救：把完整的顶层对象逐个抠出来
+    items, depth, start = [], 0, None
+    for i, ch in enumerate(t):
+        if ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0 and start is not None:
+                try:
+                    items.append(json.loads(t[start:i + 1]))
+                except Exception:
+                    pass
+                start = None
+    return items
+
+
+def llm_call(cands, limit, desc_len, max_tokens, model, api_key, want="12-16 条"):
     pool = [{"i": i, "title": soften(c["title"]), "url": c["url"], "site": c["source"],
              "text": soften(c["desc"])[:desc_len]} for i, c in enumerate(cands[:limit])]
     sys_prompt = (
-        "你是「AI 变现日报」的主编。读者是想用 AI 赚钱的普通人，不是企业。\n"
-        "任务：从候选条目里挑出 12-18 条，写成中文日报。硬性要求：\n"
-        "1) category 四选一：money（个人用 AI 变现的路径/案例，占比最高）、free（免费 Token/API 额度/算力券/补贴，"
-        "要写清领取方式与截止日期）、industry（行业动态）、tip（避坑/实操）。\n"
-        "2) money 类必须填全：difficulty（低/中/高）、amount（文中提到的赚到多少钱，如『月入 3000 元』；"
-        "没写就填『未披露』）、cycle（变现周期，如『2-4 周见第一单』；没写就按 article 内容推断并注明『约』）、"
-        "takeaway（40-70 字小结：赚的是谁的钱、核心逻辑）、"
-        "steps（3-5 步入手流程，一行文字用①②③④⑤连接）、platform（抖音/小红书/B站/YouTube/知乎 等）。\n"
-        "3) summary 必须 80-160 字。有 text 正文时基于正文写；正文很短时，基于标题与站点信息写一段"
-        "有信息量的中文摘要（可用行业常识补充背景，但**严禁编造具体数字、金额、日期、机构名**，缺失就写『原文未披露』）。\n"
-        "4) action：一句话可执行动作（例如『今晚就去闲鱼搜 XX 看需求』），所有类别都尽量填。\n"
-        "5) takeaway 与 steps 属于编辑建议（不是事实陈述），可基于行业常识给出，务必具体可执行。\n"
-        "6) 来源多样性：整期条目需来自至少 4 个不同站点；Hacker News 与 Reddit 合计最多 2 条。\n"
+        "你是「AI 变现日报」的主编，读者是想用 AI 赚钱的普通人。\n"
+        f"任务：从候选条目里挑出 {want}，写成中文日报，返回 JSON。\n"
+        "硬性要求：\n"
+        "1) 只输出 JSON 对象，形如 {\"items\":[{...}]}，不要任何解释文字或代码块围栏。"
+        "输出必须完整闭合，宁少勿多——写不完就少写几条，绝不留下半个 JSON。\n"
+        "2) category 四选一：money（个人用 AI 变现的路径/案例，占比最高）、free（免费 Token/API 额度/算力券/补贴，"
+        "写清领取方式）、industry（行业动态）、tip（避坑/实操）。\n"
+        "3) money 类必须填全：difficulty（低/中/高）、amount（文中提到的赚到多少钱；没写填『未披露』）、"
+        "cycle（变现周期，如『2-4 周见第一单』）、platform（抖音/小红书/B站/YouTube/知乎 等）、"
+        "takeaway（40-70 字小结：赚的是谁的钱、核心逻辑）、steps（3-5 步入手流程，一行文字用①②③④⑤连接）。\n"
+        "4) summary 必须 80-140 字，基于候选的 text 写；信息不足时可用行业常识补充背景，"
+        "但严禁编造具体数字、金额、日期、机构名，缺失就写『原文未披露』。\n"
+        "5) action：一句话可执行动作（如『今晚去闲鱼搜 XX 看需求』），各类型都尽量填。\n"
+        "6) 来源多样性：整期来自至少 4 个不同站点；Hacker News 与 Reddit 合计最多 2 条。\n"
         "7) url 必须原样使用候选里的 url，禁止编造。\n"
-        "8) 只输出 JSON 数组，无任何其他文字。字段："
-        '{"category","title","summary","source","url","tags":[],"platform","difficulty","amount",'
-        '"cycle","takeaway","steps","action"}。非 money 类的 platform/difficulty/amount/cycle/takeaway/steps 可为空串。\n'
-        "9) 与 AI 变现无关、信息量不足、纯广告的候选直接丢弃。"
+        "8) 与 AI 变现无关、信息量不足、纯广告的候选直接丢弃。"
     )
-    body = {"model": model, "messages": [
-        {"role": "system", "content": sys_prompt},
-        {"role": "user", "content": "候选条目：\n" + json.dumps(pool, ensure_ascii=False)}],
-        "temperature": 0.3, "max_tokens": max_tokens}
-    r = requests.post("https://open.bigmodel.cn/api/paas/v4/chat/completions",
-                      headers={"Authorization": "Bearer " + api_key, "Content-Type": "application/json"},
-                      json=body, timeout=240)
-    if r.status_code == 429:
-        raise RuntimeError("rate limited (429)")
-    r.raise_for_status()
-    j = r.json()
-    choice = j["choices"][0]
-    content = choice["message"]["content"]
-    if choice.get("finish_reason") == "length":
-        log("    LLM 输出被 max_tokens 截断，本次结果可能不完整")
-    log(f"    LLM tokens: {j.get('usage')}")
-    if has_bad_marker(content):
-        raise RuntimeError("API 返回风控/错误标记: " + content[:160].replace("\n", " "))
-    m = re.search(r"\[.*\]", content, re.S)
-    if not m:
-        raise RuntimeError("no JSON array in response: " + content[:160].replace("\n", " "))
-    return json.loads(m.group(0))
+    body = {"model": model,
+            "messages": [{"role": "system", "content": sys_prompt},
+                         {"role": "user", "content": "候选条目：\n" + json.dumps(pool, ensure_ascii=False)}],
+            "temperature": 0.3, "max_tokens": max_tokens,
+            "response_format": {"type": "json_object"}}   # 强制 JSON，避免被 max_tokens 截断成残缺 JSON
+
+    last_err = ""
+    for attempt in range(3):
+        try:
+            r = requests.post("https://open.bigmodel.cn/api/paas/v4/chat/completions",
+                              headers={"Authorization": "Bearer " + api_key, "Content-Type": "application/json"},
+                              json=body, timeout=240)
+            if r.status_code in (429, 500, 502, 503, 504):
+                last_err = f"HTTP {r.status_code}"
+                time.sleep(6 * (attempt + 1))
+                continue
+            r.raise_for_status()
+            j = r.json()
+            choice = j["choices"][0]
+            content = choice["message"]["content"]
+            log(f"    LLM finish={choice.get('finish_reason')} tokens={j.get('usage')}")
+            if has_bad_marker(content):
+                last_err = "API 风控标记: " + content[:100]
+                time.sleep(4)
+                continue
+            items = parse_items(content)
+            if items:
+                return items
+            last_err = "解析后无条目: " + content[:120].replace("\n", " ")
+        except Exception as e:
+            last_err = f"{type(e).__name__}: {str(e)[:120]}"
+            time.sleep(4)
+    raise RuntimeError(last_err or "unknown error")
 
 
 def llm_pick(cands):
@@ -696,42 +745,53 @@ def llm_pick(cands):
         log("  no ZHIPU_API_KEY -> rule mode")
         return None
     model = os.environ.get("ZHIPU_MODEL", "glm-4-flash").strip()
-    attempts = [(40, 1000, 4000), (20, 500, 3000)]
-    for idx, (limit, dlen, mtok) in enumerate(attempts, 1):
+
+    money = [c for c in cands if c["category"] == "money"]
+    others = [c for c in cands if c["category"] != "money"]
+    batches = []
+    if money:
+        batches.append((money[:26], 9, 650, 4096, "9-11 条，全部为 money 类（个人 AI 变现路径/案例）"))
+    if others:
+        batches.append((others[:18], 5, 500, 3000, "5-7 条，为 free/industry/tip 类"))
+
+    collected, errs = [], []
+    for batch, limit, dlen, mtok, want in batches:
         try:
-            raw = llm_call(cands, limit, dlen, mtok, model, api_key)
-            valid = {c["url"].rstrip("/") for c in cands}
-            ok, dropped = [], 0
-            for it in raw:
-                if not it.get("url") or it["url"].rstrip("/") not in valid:
-                    continue
-                if it.get("category") not in ("money", "free", "industry", "tip"):
-                    continue
-                if has_bad_marker(it.get("summary"), it.get("title"), it.get("takeaway"),
-                                  it.get("steps"), it.get("action")):
-                    dropped += 1
-                    continue          # 含风控/错误文本的条目直接丢弃
-                for k in ("tags", "platform", "difficulty", "amount", "cycle",
-                          "takeaway", "steps", "action"):
-                    if k == "tags":
-                        it.setdefault("tags", [])
-                    else:
-                        it.setdefault(k, "")
-                ok.append(it)
-            if dropped:
-                log(f"  已丢弃含错误标记的条目 {dropped} 条")
-            if ok and len(ok) >= 6:
-                LAST_LLM_ERROR[0] = ""
-                log(f"  LLM 尝试{idx} 成功：{len(ok)} 条")
-                return ok
-            if ok:
-                log(f"  有效条目仅 {len(ok)} 条，过少，视为失败")
-            LAST_LLM_ERROR[0] = f"attempt{idx}: 0 valid items"
-            log(f"  LLM 尝试{idx} 返回 0 条有效数据")
+            raw = llm_call(batch, limit, dlen, mtok, model, api_key, want)
+            log(f"  批次「{want[:12]}…」返回 {len(raw)} 条")
         except Exception as e:
-            LAST_LLM_ERROR[0] = f"attempt{idx}: {e}"
-            log(f"  LLM 尝试{idx} 失败：{e}")
-    return None
+            errs.append(str(e)[:160])
+            log(f"  批次失败：{e}")
+            continue
+        valid = {c["url"].rstrip("/"): c for c in batch}
+        for it in raw:
+            u = (it.get("url") or "").rstrip("/")
+            if u not in valid:
+                continue
+            if it.get("category") not in ("money", "free", "industry", "tip"):
+                continue
+            if has_bad_marker(it.get("summary"), it.get("title"), it.get("takeaway"),
+                              it.get("steps"), it.get("action")):
+                continue
+            src = valid[u]
+            # 来源与平台一律以抓取到的真实数据为准，不信模型自述（防张冠李戴）
+            it["source"] = src["source"]
+            it["platform"] = it.get("platform") or src["platform"]
+            it["url"] = src["url"]
+            for k in ("tags", "difficulty", "amount", "cycle", "takeaway", "steps", "action"):
+                if k == "tags":
+                    it.setdefault("tags", [])
+                else:
+                    it.setdefault(k, "")
+            collected.append(it)
+
+    if len(collected) < 6:
+        LAST_LLM_ERROR[0] = "；".join(errs) or f"有效条目过少({len(collected)})"
+        log(f"  有效条目仅 {len(collected)} 条，判定 LLM 失败")
+        return None
+    LAST_LLM_ERROR[0] = ""
+    log(f"  LLM 汇总成功：{len(collected)} 条")
+    return collected[:MAX_ITEMS]
 
 
 def fallback_items(cands):

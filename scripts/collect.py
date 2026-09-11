@@ -712,7 +712,10 @@ def write_report(items, mode):
         "summary": (f"{'AI 编辑' if mode == 'llm' else '自动聚合'}模式："
                     f"变现路径 {cnt.get('money', 0)} 条 · 免费额度 {cnt.get('free', 0)} 条 · "
                     f"行业 {cnt.get('industry', 0)} 条 · 避坑 {cnt.get('tip', 0)} 条，"
-                    f"覆盖 {len(sites)} 个来源站点。"),
+                    f"覆盖 {len(sites)} 个来源站点。"
+                    + ("" if mode == "llm" else
+                       " ⚠️ 未检测到 AI Key（ZHIPU_API_KEY），本期为聚合模式："
+                       "摘要为正文截断、暂无新手指南与可执行建议。")),
         "items": items,
     }
     DAILY.mkdir(parents=True, exist_ok=True)

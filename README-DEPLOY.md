@@ -58,6 +58,9 @@ git push -u origin main
 - Name：`ZHIPU_API_KEY`
 - Secret：粘贴第 1 步的 Key
 
+> ⚠️ **保存后再打开这个页面，Value 框会是空的 —— 这是正常的**。GitHub Secrets 只写不读，任何人在网页上都看不到已存的值（连仓库管理员也不行）。判断有没有配成功，看 Actions 日志或 `site/data/run-log.json` 里的 `mode` 字段：`llm` = Key 生效，`rule` = 没读到 Key。
+> 🔁 顺带一提：Key 一旦出现在截图/聊天里，建议去智谱控制台**重建一个** Key 并更新此 Secret。
+
 ## 第 4 步：开启 GitHub Pages（必做，否则发布 Job 会失败）
 
 仓库 → **Settings → Pages → Build and deployment → Source** 选择 **GitHub Actions**

@@ -761,7 +761,7 @@ def llm_call(cands, limit, desc_len, max_tokens, model, api_key, want="12-16 条
         "但严禁编造具体数字、金额、日期、机构名，缺失就写『原文未披露』。\n"
         "5) action：一句话可执行动作（如『今晚去闲鱼搜 XX 看需求』），各类型都尽量填。\n"
         "6) 来源多样性：整期来自至少 4 个不同站点；Hacker News 与 Reddit 合计最多 2 条。\n"
-        "7) url 必须原样使用候选里的 url，禁止编造。\n"
+        "7) 每条必须原样回传候选里的整数编号字段 i（用于对齐真实链接），不要改动它；url 字段可留空。\n"
         "8) 与 AI 变现无关、信息量不足、纯广告的候选直接丢弃。"
     )
     body = {"model": model,
@@ -819,6 +819,8 @@ def llm_pick(cands):
     LLM_TRACE.append(f"key={len(api_key)} money={len(money)} others={len(others)} batches={len(batches)} requests={bool(requests)}")
     collected, errs = [], []
     for batch, limit, dlen, mtok, want in batches:
+        for _i, _c in enumerate(batch):      # 与 llm_call 内的 pool 编号保持一致
+            _c["_i"] = _i
         try:
             raw = llm_call(batch, limit, dlen, mtok, model, api_key, want)
             log(f"  批次「{want[:12]}…」返回 {len(raw)} 条")
@@ -828,18 +830,35 @@ def llm_pick(cands):
             LLM_TRACE.append(f"batch[{want[:10]}] EXC {str(e)[:100]}")
             log(f"  批次失败：{e}")
             continue
-        valid = {c["url"].rstrip("/"): c for c in batch}
+        by_url = {c["url"].rstrip("/"): c for c in batch}
         drop_url = drop_cat = drop_bad = 0
         for it in raw:
-            u = (it.get("url") or "").rstrip("/")
-            if u not in valid:
+            src = None
+            # ① 首选：模型回传的候选编号
+            try:
+                idx = int(str(it.get("i", "")).strip())
+                if 0 <= idx < len(batch):
+                    src = batch[idx]
+            except Exception:
+                src = None
+            # ② 兜底：URL 精确匹配
+            if src is None:
+                src = by_url.get((it.get("url") or "").rstrip("/"))
+            # ③ 兜底：标题前 10 字匹配
+            if src is None:
+                t10 = str(it.get("title") or "")[:10]
+                if t10:
+                    for c in batch:
+                        if c["title"][:10] == t10:
+                            src = c
+                            break
+            if src is None:
                 drop_url += 1
                 continue
             if has_bad_marker(it.get("summary"), it.get("title"), it.get("takeaway"),
                               it.get("steps"), it.get("action")):
                 drop_bad += 1
                 continue
-            src = valid[u]
             it["category"] = norm_category(it.get("category"), src["category"])
             # 来源与平台一律以抓取到的真实数据为准，不信模型自述（防张冠李戴）
             it["source"] = src["source"]

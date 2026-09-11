@@ -286,10 +286,14 @@ def fetch_google_news(query):
     url = ("https://news.google.com/rss/search?q=" + urllib.parse.quote(query)
            + "&hl=zh-CN&gl=CN&ceid=CN:zh-Hans")
     items = fetch_rss({"url": url})
-    for it in items:                      # 解出真实文章链接，否则抓不到正文
+    out = []
+    for it in items:
         if "news.google.com" in it["url"]:
             it["url"] = gnews_real_url(it["url"])
-    return items
+        if "news.google.com" in it["url"] or "google.com" in urllib.parse.urlparse(it["url"]).netloc:
+            continue        # 解不出真实地址：正文抓不到，留着只会污染摘要
+        out.append(it)
+    return out
 
 
 def fetch_web_search(query):
@@ -404,8 +408,14 @@ def _jina_pace():
         _JINA_LAST[0] = time.time()
 
 
+NEVER_JINA = ("google.com", "news.google.com", "youtube.com", "facebook.com", "x.com", "twitter.com")
+
+
 def fetch_jina(url):
     """用 r.jina.ai 阅读器代理抓正文（免费、无需 key）。走 curl 通道避开 Cloudflare。"""
+    host = urllib.parse.urlparse(url).netloc.lower()
+    if any(host.endswith(d) for d in NEVER_JINA):
+        return ""
     text = ""
     for attempt in (1, 2):
         _jina_pace()
@@ -826,6 +836,7 @@ def main():
 
 
 def _main_impl(args):
+    write_run_log({}, 0, 0, "started", "脚本已启动")   # 启动探针：没看到这条就是启动阶段就崩了
     today_file = DAILY / f"{TODAY}.json"
     if today_file.exists() and not args.force and not args.dry_run:
         # 质量自愈：如果当天日报摘要过短 / 没有新手指南，说明是低质量产物，自动重生成

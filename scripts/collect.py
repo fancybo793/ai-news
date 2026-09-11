@@ -53,8 +53,8 @@ MIN_ITEMS = 8
 RSS_CAP = 6          # 单个 RSS 源最多入池条数
 WEB_CAP = 6          # 单个网页搜索词最多入池条数
 HN_CAP = 3           # HN 降权
-ENRICH_MAX = 20      # 最多抓多少条正文（jina 免费档限速，别开太大）
-ENRICH_WORKERS = 4
+ENRICH_MAX = 14      # 最多抓多少条正文（jina 免费档限速，别开太大）
+ENRICH_WORKERS = 5
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
@@ -358,7 +358,7 @@ _JINA_LAST = [0.0]
 def _jina_pace():
     """控制 jina 调用频率（免费档约 20 次/分钟）。"""
     with _JINA_LOCK:
-        wait = 3.2 - (time.time() - _JINA_LAST[0])
+        wait = 1.5 - (time.time() - _JINA_LAST[0])
         if wait > 0:
             time.sleep(wait)
         _JINA_LAST[0] = time.time()
@@ -712,7 +712,7 @@ def write_report(items, mode):
     log("report written:", TODAY, n, "items, sites:", len(sites))
 
 
-def write_run_log(stats, cand_count, got_body, mode, note):
+def write_run_log(stats, cand_count, got_body, mode, note, error=""):
     """把本次运行诊断写进仓库，方便远程排查（无需 Actions 日志权限）。"""
     try:
         logpath = DATA / "run-log.json"
@@ -724,6 +724,7 @@ def write_run_log(stats, cand_count, got_body, mode, note):
             "articlesFetched": got_body,
             "sources": stats,
             "note": note,
+            "error": error,
         }
         logpath.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         log("run-log written")
@@ -738,6 +739,18 @@ def main():
     args = ap.parse_args()
 
     log("date:", TODAY)
+    try:
+        _main_impl(args)
+    except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        log("FATAL:", e)
+        log(tb[-1500:])
+        write_run_log(getattr(main, "_stats", {}), 0, 0, "error", "运行异常，详见 error 字段", tb[-1200:])
+        raise
+
+
+def _main_impl(args):
     today_file = DAILY / f"{TODAY}.json"
     if today_file.exists() and not args.force and not args.dry_run:
         # 质量自愈：如果当天日报摘要过短 / 没有新手指南，说明是低质量产物，自动重生成
@@ -755,6 +768,8 @@ def main():
         log(f"today's report quality low (avg summary {avg:.0f} 字, 指南 {guide} 条) -> 自动重生成")
 
     cands, stats = collect_candidates()
+    main._stats = stats
+    write_run_log(stats, len(cands), 0, "collected", "采集阶段完成，正文/LLM 结果待更新")
     log("candidates:", len(cands))
     by_src = {}
     for c in cands:

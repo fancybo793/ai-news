@@ -1,9 +1,9 @@
 {
   "date": "2026-09-12",
-  "runAt": "2026-09-12T00:16:31+08:00",
+  "runAt": "2026-09-12T00:42:47+08:00",
   "mode": "rule",
-  "candidates": 49,
-  "articlesFetched": 3,
+  "candidates": 40,
+  "articlesFetched": 6,
   "sources": {
     "必应新闻·AI 副业 变现": 0,
     "谷歌新闻·AI 副业 变现": 0,
@@ -43,6 +43,6 @@
     "36氪": 0,
     "Hacker News": 3
   },
-  "note": "attempt2: Expecting ',' delimiter: line 12 column 414 (char 6873)",
+  "note": "有效条目过少(1)",
   "error": ""
 }

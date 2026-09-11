@@ -793,7 +793,7 @@ def llm_pick(cands):
     others = [c for c in cands if c["category"] != "money"]
     batches = []
     if money:
-        batches.append((money[:26], 9, 650, 4096, "9-11 条，全部为 money 类（个人 AI 变现路径/案例）"))
+        batches.append((money[:30], 12, 650, 4096, "9-12 条，全部为 money 类（个人 AI 变现路径/案例）"))
     if others:
         batches.append((others[:18], 5, 500, 3000, "5-7 条，为 free/industry/tip 类"))
 
@@ -831,7 +831,7 @@ def llm_pick(cands):
                     it.setdefault(k, "")
             collected.append(it)
 
-    if len(collected) < 6:
+    if len(collected) < 4:
         LAST_LLM_ERROR[0] = "；".join(errs) or f"有效条目过少({len(collected)})"
         log(f"  有效条目仅 {len(collected)} 条，判定 LLM 失败")
         return None
@@ -1000,7 +1000,8 @@ def _main_impl(args):
                 "| 摘要", len(it.get("summary", "")), "字")
         return
 
-    write_run_log(stats, len(cands), got_body, mode, LAST_LLM_ERROR[0])
+    write_run_log(stats, len(cands), got_body, mode,
+                  f"mode={mode} items={len(items)} err={(LAST_LLM_ERROR[0] or '-')[:90]}")
     write_report(items, mode)
 
 

@@ -684,6 +684,25 @@ def existing_urls():
 
 # ---------------- LLM ----------------
 
+CAT_ALIASES = {
+    "money": ("money", "变现", "赚钱", "副业", "收入", "案例", "monetiz", "income"),
+    "free": ("free", "免费", "额度", "白嫖", "福利", "补贴", "credits", "羊毛"),
+    "industry": ("industry", "行业", "动态", "新闻", "资讯", "定价", "news"),
+    "tip": ("tip", "避坑", "提示", "建议", "实操", "风险", "教程", "how to"),
+}
+
+
+def norm_category(value, fallback="industry"):
+    v = str(value or "").strip().lower()
+    for key in ("money", "free", "industry", "tip"):
+        if v == key:
+            return key
+    for key, kws in CAT_ALIASES.items():
+        if any(k in v for k in kws):
+            return key
+    return fallback
+
+
 def parse_items(content):
     """从模型输出里取出条目数组：支持 JSON 模式、```json 围栏、以及被截断时逐个对象抢救。"""
     t = (content or "").strip()
@@ -810,16 +829,18 @@ def llm_pick(cands):
             log(f"  批次失败：{e}")
             continue
         valid = {c["url"].rstrip("/"): c for c in batch}
+        drop_url = drop_cat = drop_bad = 0
         for it in raw:
             u = (it.get("url") or "").rstrip("/")
             if u not in valid:
-                continue
-            if it.get("category") not in ("money", "free", "industry", "tip"):
+                drop_url += 1
                 continue
             if has_bad_marker(it.get("summary"), it.get("title"), it.get("takeaway"),
                               it.get("steps"), it.get("action")):
+                drop_bad += 1
                 continue
             src = valid[u]
+            it["category"] = norm_category(it.get("category"), src["category"])
             # 来源与平台一律以抓取到的真实数据为准，不信模型自述（防张冠李戴）
             it["source"] = src["source"]
             it["platform"] = it.get("platform") or src["platform"]
@@ -830,6 +851,7 @@ def llm_pick(cands):
                 else:
                     it.setdefault(k, "")
             collected.append(it)
+        LLM_TRACE.append(f"filter[{want[:8]}] url_miss={drop_url} bad={drop_bad} kept={len(collected)}")
 
     if len(collected) < 4:
         LAST_LLM_ERROR[0] = "；".join(errs) or f"有效条目过少({len(collected)})"

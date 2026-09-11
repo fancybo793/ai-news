@@ -186,6 +186,23 @@ def clean_text(s, limit=220):
     return s[:limit]
 
 
+def site_label(url, fallback=""):
+    """把 url 变成一个可读的站点名：已知平台词典 > 标题尾巴 > 主域名。"""
+    try:
+        host = urllib.parse.urlparse(url).netloc.lower().split(":")[0]
+    except Exception:
+        return fallback
+    host = host[4:] if host.startswith("www.") else host
+    for dom, name in DOMAIN_PLATFORM.items():
+        if host.endswith(dom):
+            return name
+    parts = host.split(".")
+    if len(parts) >= 2:
+        core = parts[-2] if parts[-2] not in ("com", "net", "org", "gov", "edu", "co") else parts[0]
+        return core
+    return fallback or host
+
+
 def platform_of(url):
     try:
         host = urllib.parse.urlparse(url).netloc.lower().lstrip("www.")
@@ -446,9 +463,15 @@ def collect_candidates():
             cat = classify(it["title"], it["desc"])
             if not cat:
                 continue
-            plat = platform_of(u) if allow_platform_infer else ""
+            plat = platform_of(u)
+            label = site_label(u)
+            # 标题尾巴常带媒体名（如 "xxx - 36 Kr"），优先用它
+            tail = ""
+            mt = re.search(r"[-–—|]\s*([^-–—|]{2,14})\s*$", it["title"])
+            if mt:
+                tail = clean_text(mt.group(1), 20)
             cands.append({"title": it["title"], "url": it["url"],
-                          "source": plat or platform or source,
+                          "source": label or tail or plat or platform or source,
                           "platform": plat or platform, "category": cat, "desc": it["desc"]})
             kept += 1
             if kept >= cap:

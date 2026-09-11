@@ -55,7 +55,13 @@ jobs:
             echo "今日无更新（采集被跳过或无新增）"
           else
             git commit -m "daily report $(date -u +%F)"
-            git push
+            # 并发运行时可能撞车，重试 3 次（每次先 rebase）
+            for i in 1 2 3; do
+              if git push; then break; fi
+              echo "push 失败，第 $i 次重试…"
+              git pull --rebase --autostash origin main || true
+              sleep 5
+            done
           fi
 
       - name: 采集失败则标记任务失败

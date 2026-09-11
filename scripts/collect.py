@@ -470,8 +470,11 @@ def collect_candidates():
             mt = re.search(r"[-–—|]\s*([^-–—|]{2,14})\s*$", it["title"])
             if mt:
                 tail = clean_text(mt.group(1), 20)
+            # 搜索引擎跳转域名（google/bing/news.google）没有信息量，优先用标题尾巴里的媒体名
+            if label in ("google", "bing", "news") and tail:
+                label = tail
             cands.append({"title": it["title"], "url": it["url"],
-                          "source": label or tail or plat or platform or source,
+                          "source": label or plat or platform or source,
                           "platform": plat or platform, "category": cat, "desc": it["desc"]})
             kept += 1
             if kept >= cap:

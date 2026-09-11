@@ -30,14 +30,17 @@ import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 import xml.etree.ElementTree as ET
 
+IMPORT_NOTES = []
 try:
     import requests
-except ImportError:
+except Exception as _e:                      # 不能只捕获 ImportError：依赖缺失会静默降级
     requests = None
+    IMPORT_NOTES.append(f"requests: {type(_e).__name__}: {_e}")
 try:
     import feedparser
-except ImportError:
+except Exception as _e:
     feedparser = None
+    IMPORT_NOTES.append(f"feedparser: {type(_e).__name__}: {_e}")
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SITE = ROOT / "site"
@@ -113,6 +116,7 @@ EXTRA_RSS = [
 HN_QUERIES = ["AI side hustle", "free credits", "indie AI revenue"]
 
 LAST_LLM_ERROR = [""]   # 记录最后一次 LLM 失败原因（写进 run log）
+LLM_TRACE = []          # LLM 调用链追踪（写进 run log，便于远程定位）
 
 DOMAIN_PLATFORM = {
     "bilibili.com": "B站", "b23.tv": "B站",
@@ -189,6 +193,33 @@ def http_get(url, timeout=25, headers=None):
     req = urllib.request.Request(url, headers=h)
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return resp.read().decode("utf-8", "ignore")
+
+
+def post_json(url, headers, payload, timeout=240):
+    """发 JSON POST：优先 requests，不可用则用 curl（避免因依赖问题静默失败）。"""
+    data = json.dumps(payload, ensure_ascii=False)
+    if requests:
+        r = requests.post(url, headers=headers, json=payload, timeout=timeout)
+        return r.status_code, r.text
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as f:
+        f.write(data)
+        path = f.name
+    try:
+        cmd = ["curl", "-sS", "-X", "POST", "--max-time", str(timeout),
+               "-H", "Content-Type: application/json", "-d", "@" + path,
+               "-w", "\n%{http_code}", url]
+        for k, v in headers.items():
+            cmd[cmd.index("--max-time"):cmd.index("--max-time")] = ["-H", f"{k}: {v}"]
+        r = subprocess.run(cmd, capture_output=True, timeout=timeout + 20)
+        out = r.stdout.decode("utf-8", "ignore")
+        code = int(out.rsplit("\n", 1)[-1].strip() or 0)
+        return code, out.rsplit("\n", 1)[0]
+    finally:
+        try:
+            os.unlink(path)
+        except Exception:
+            pass
 
 
 def curl_get(url, headers=None, timeout=50):
@@ -723,15 +754,16 @@ def llm_call(cands, limit, desc_len, max_tokens, model, api_key, want="12-16 条
     last_err = ""
     for attempt in range(3):
         try:
-            r = requests.post("https://open.bigmodel.cn/api/paas/v4/chat/completions",
-                              headers={"Authorization": "Bearer " + api_key, "Content-Type": "application/json"},
-                              json=body, timeout=240)
-            if r.status_code in (429, 500, 502, 503, 504):
-                last_err = f"HTTP {r.status_code}"
+            code, text = post_json("https://open.bigmodel.cn/api/paas/v4/chat/completions",
+                                   {"Authorization": "Bearer " + api_key}, body, timeout=240)
+            if code in (429, 500, 502, 503, 504):
+                last_err = f"HTTP {code}"
                 time.sleep(6 * (attempt + 1))
                 continue
-            r.raise_for_status()
-            j = r.json()
+            if code != 200:
+                last_err = f"HTTP {code}: {text[:120]}"
+                break
+            j = json.loads(text)
             choice = j["choices"][0]
             content = choice["message"]["content"]
             log(f"    LLM finish={choice.get('finish_reason')} tokens={j.get('usage')}")
@@ -751,7 +783,8 @@ def llm_call(cands, limit, desc_len, max_tokens, model, api_key, want="12-16 条
 
 def llm_pick(cands):
     api_key = os.environ.get("ZHIPU_API_KEY", "").strip()
-    if not api_key or not requests:
+    if not api_key:
+        LAST_LLM_ERROR[0] = "环境变量 ZHIPU_API_KEY 为空（Secret 未送达）"
         log("  no ZHIPU_API_KEY -> rule mode")
         return None
     model = os.environ.get("ZHIPU_MODEL", "glm-4-flash").strip()
@@ -764,13 +797,16 @@ def llm_pick(cands):
     if others:
         batches.append((others[:18], 5, 500, 3000, "5-7 条，为 free/industry/tip 类"))
 
+    LLM_TRACE.append(f"key={len(api_key)} money={len(money)} others={len(others)} batches={len(batches)} requests={bool(requests)}")
     collected, errs = [], []
     for batch, limit, dlen, mtok, want in batches:
         try:
             raw = llm_call(batch, limit, dlen, mtok, model, api_key, want)
             log(f"  批次「{want[:12]}…」返回 {len(raw)} 条")
+            LLM_TRACE.append(f"batch[{want[:10]}] ok={len(raw)}")
         except Exception as e:
             errs.append(str(e)[:160])
+            LLM_TRACE.append(f"batch[{want[:10]}] EXC {str(e)[:100]}")
             log(f"  批次失败：{e}")
             continue
         valid = {c["url"].rstrip("/"): c for c in batch}
@@ -883,6 +919,10 @@ def write_run_log(stats, cand_count, got_body, mode, note, error=""):
             # 安全探针：只记录"有没有读到 Key"和长度，绝不写入密钥内容
             "keyPresent": bool(os.environ.get("ZHIPU_API_KEY", "").strip()),
             "keyLen": len(os.environ.get("ZHIPU_API_KEY", "").strip()),
+            "hasRequests": bool(requests),
+            "hasFeedparser": bool(feedparser),
+            "importNotes": IMPORT_NOTES,
+            "llmTrace": LLM_TRACE[-12:],
         }
         logpath.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         log("run-log written")

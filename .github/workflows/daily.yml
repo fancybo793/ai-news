@@ -26,7 +26,7 @@ concurrency:
 jobs:
   collect:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -38,12 +38,16 @@ jobs:
         run: pip install requests feedparser
 
       - name: 采集并生成当日日报
+        id: collect
+        continue-on-error: true          # 失败也要继续，好把诊断日志提交上去
         env:
           ZHIPU_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
         run: python scripts/collect.py
 
       - name: 提交数据
+        if: always()
         run: |
+          mkdir -p site/data
           git config user.name "news-bot"
           git config user.email "actions@users.noreply.github.com"
           git add site/data
@@ -53,6 +57,12 @@ jobs:
             git commit -m "daily report $(date -u +%F)"
             git push
           fi
+
+      - name: 采集失败则标记任务失败
+        if: steps.collect.outcome == 'failure'
+        run: |
+          echo "采集脚本执行失败，诊断已写入 site/data/run-log.json"
+          exit 1
 
   deploy:
     needs: collect

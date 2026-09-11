@@ -1,9 +1,9 @@
 {
   "date": "2026-09-12",
-  "runAt": "2026-09-12T00:51:32+08:00",
+  "runAt": "2026-09-12T00:57:56+08:00",
   "mode": "rule",
   "candidates": 40,
-  "articlesFetched": 4,
+  "articlesFetched": 3,
   "sources": {
     "必应新闻·AI 副业 变现": 0,
     "谷歌新闻·AI 副业 变现": 0,
@@ -43,8 +43,16 @@
     "36氪": 0,
     "Hacker News": 3
   },
-  "note": "有效条目过少(1)",
+  "note": "有效条目过少(0)",
   "error": "",
   "keyPresent": true,
-  "keyLen": 49
+  "keyLen": 49,
+  "hasRequests": true,
+  "hasFeedparser": true,
+  "importNotes": [],
+  "llmTrace": [
+    "key=49 money=38 others=2 batches=2 requests=True",
+    "batch[9-11 条，全部为] ok=6",
+    "batch[5-7 条，为 fr] ok=1"
+  ]
 }

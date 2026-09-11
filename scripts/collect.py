@@ -342,7 +342,9 @@ def fetch_jina_search(site_name, url_tpl, kw, domain_filter):
     t = curl_get("https://r.jina.ai/" + url,
                  headers={"Accept": "text/plain", "X-Return-Format": "markdown"},
                  timeout=55)
-    if not t:
+    if not t or has_bad_marker(t[:400]):
+        if t:
+            log(f"    jina search 返回错误载荷，已丢弃: {t[:80]}")
         return []
     out, seen = [], set()
     for m in re.finditer(r"\[([^\]]{8,90})\]\((https?://[^)\s]+)\)", t):
@@ -414,7 +416,12 @@ def fetch_jina(url):
             break
         if attempt == 1:
             time.sleep(4)
-    if not text:
+    if not text or has_bad_marker(text[:400]):
+        if text:
+            log(f"    jina 返回错误载荷，已丢弃: {text[:80]}")
+        return ""
+    # 正文长度过短通常也是错误页（真实文章正文不会只有几十字）
+    if "Markdown Content:" not in text and len(text) < 200:
         return ""
     if "Markdown Content:" in text:
         text = text.split("Markdown Content:", 1)[1]
@@ -480,6 +487,8 @@ def collect_candidates():
                 host = urllib.parse.urlparse(u).netloc.lower()
                 if restrict_domain not in host:
                     continue          # site: 检索时严格限定域名，保证"真·站内"
+            if has_bad_marker(it.get("title"), it.get("desc")):
+                continue              # 抓取返回的是错误页，直接丢弃
             seen.add(u)
             cat = classify(it["title"], it["desc"])
             if not cat:

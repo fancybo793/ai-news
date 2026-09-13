@@ -66,6 +66,9 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 NEWS_QUERIES_ZH = [
     "AI 副业 变现", "AI 赚钱 案例", "AI 变现 博主 拆解",
     "AI 副业 月入 实操", "免费 token 额度 领取", "大模型 免费额度 赠送",
+    "AI 副业 小红书", "AI 变现 B站", "AI 赚钱 抖音",
+    "AI 数字产品 售卖", "AI 接单 自由职业", "AI 智能体 变现",
+    "免费 API 额度 薅羊毛", "AI 工具 月入",
 ]
 NEWS_QUERIES_EN = [
     "AI side hustle income", "free LLM API credits", "creator AI monetization",
@@ -83,6 +86,11 @@ WEB_QUERIES = [
     "site:zhihu.com AI 变现 拆解",
     # 通用：变现路径与实操
     "AI 变现 案例 月入 拆解",
+    "小红书 AI 副业 教程",
+    "抖音 AI 赚钱 方法",
+    "B站 AI 变现 教程",
+    "AI 变现 从0到1 实操",
+    "AI 副业 无门槛 推荐",
     "AI 副业 零成本 从0到1",
     "AI 数字产品 模板 卖钱",
     "AI 提示词 售卖 收入",

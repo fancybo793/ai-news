@@ -56,7 +56,7 @@ MIN_ITEMS = 8
 RSS_CAP = 6          # 单个 RSS 源最多入池条数
 WEB_CAP = 6          # 单个网页搜索词最多入池条数
 HN_CAP = 3           # HN 降权
-ENRICH_MAX = 14      # 最多抓多少条正文（jina 免费档限速，别开太大）
+ENRICH_MAX = 8      # 最多抓多少条正文（jina 免费档限速，别开太大）
 ENRICH_WORKERS = 5
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -134,6 +134,16 @@ DOMAIN_PLATFORM = {
     "baijiahao.baidu.com": "百家号", "sohu.com": "搜狐", "163.com": "网易",
     "qq.com": "腾讯新闻", "sina.com.cn": "新浪", "thepaper.cn": "澎湃",
 }
+
+# 必须出现 AI 语境词，否则一律丢弃（否则「免费」会捞到词典、小游戏、影视站）
+AI_KW = ("ai", "a.i.", "人工智能", "大模型", "大语言", "模型", "llm", "gpt", "chatgpt", "claude",
+         "gemini", "glm", "deepseek", "kimi", "通义", "qwen", "混元", "豆包", "文心", "智谱",
+         "token", "提示词", "prompt", "智能体", "agent", "算力", "生成式", "aigc",
+         "midjourney", "sora", "suno", "copilot", "开源模型", "微调", "api")
+
+# 垃圾站黑名单（被关键词误捞的已知站点）
+JUNK_DOMAINS = ("iciba.com", "pigame", "yuppiy", "iqiyi.com", "youku.com", "douban.com",
+                "zhaopin.com", "58.com", "taobao.com", "jd.com", "zhihu.com/search")
 
 MONEY_KW = ["变现", "赚钱", "副业", "月入", "接单", "收入", "出单", "睡后收入",
             "怎么赚", "如何赚", "赚到", "搞钱", "兼职",
@@ -246,6 +256,28 @@ def clean_text(s, limit=220):
     s = re.sub(r"<[^>]+>", " ", s)
     s = re.sub(r"\s+", " ", s).strip()
     return s[:limit]
+
+
+REDIRECT_HOSTS = ("bing.com", "msn.com", "news.google.com", "google.com", "news.yahoo.com")
+
+
+def unwrap_url(u):
+    """把搜索引擎的跳转包装地址还原成真实文章地址（必应 apiclick / 谷歌 articles）。"""
+    if not u:
+        return u
+    u = html_mod.unescape(str(u)).strip()
+    host = urllib.parse.urlparse(u).netloc.lower()
+    if host.endswith("google.com") and "/articles/" in u:
+        return gnews_real_url(u)
+    if any(host.endswith(d) for d in ("bing.com", "msn.com", "news.yahoo.com")):
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(u).query)
+        for key in ("url", "u", "r", "target"):
+            vals = q.get(key) or []
+            if vals:
+                cand = urllib.parse.unquote(vals[0])
+                if cand.startswith("http"):
+                    return cand
+    return u
 
 
 def site_label(url, fallback=""):
@@ -438,6 +470,7 @@ def fetch_hn(src):
 
 _JINA_LOCK = threading.Lock()
 _JINA_LAST = [0.0]
+_JINA_BLOCKED = [False]      # 免费额度被封后本次运行不再尝试
 
 
 def _jina_pace():
@@ -449,11 +482,14 @@ def _jina_pace():
         _JINA_LAST[0] = time.time()
 
 
-NEVER_JINA = ("google.com", "news.google.com", "youtube.com", "facebook.com", "x.com", "twitter.com")
+NEVER_JINA = ("google.com", "news.google.com", "bing.com", "msn.com", "youtube.com",
+              "facebook.com", "x.com", "twitter.com")
 
 
 def fetch_jina(url):
     """用 r.jina.ai 阅读器代理抓正文（免费、无需 key）。走 curl 通道避开 Cloudflare。"""
+    if _JINA_BLOCKED[0]:
+        return ""
     host = urllib.parse.urlparse(url).netloc.lower()
     if any(host.endswith(d) for d in NEVER_JINA):
         return ""
@@ -469,7 +505,12 @@ def fetch_jina(url):
             time.sleep(4)
     if not text or has_bad_marker(text[:400]):
         if text:
-            log(f"    jina 返回错误载荷，已丢弃: {text[:80]}")
+            if "AuthenticationRequiredError" in text or "blocked from performing anonymous" in text:
+                if not _JINA_BLOCKED[0]:
+                    _JINA_BLOCKED[0] = True
+                    log("    jina 匿名额度已被封，本次运行停用正文抓取（改用标题+摘要生成）")
+            else:
+                log(f"    jina 返回错误载荷，已丢弃: {text[:80]}")
         return ""
     # 正文长度过短通常也是错误页（真实文章正文不会只有几十字）
     if "Markdown Content:" not in text and len(text) < 200:
@@ -514,10 +555,14 @@ def fetch_article_text(url):
 
 # ---------------- 分类与组装 ----------------
 
-def classify(title, desc):
+def classify(title, desc, url=""):
     text = (title + " " + desc).lower()
     if any(k in text for k in DROP_KW):
         return None
+    if url and any(d in url.lower() for d in JUNK_DOMAINS):
+        return None
+    if not any(k in text for k in AI_KW):
+        return None                      # 没有 AI 语境的，一律不要
     if any(k in text for k in MONEY_KW):
         return "money"
     if any(k in text for k in FREE_KW):
@@ -531,17 +576,20 @@ def collect_candidates():
     def push(items, source, platform, cap, allow_platform_infer=True, restrict_domain=None):
         kept = 0
         for it in items:
-            u = it["url"].rstrip("/")
-            if u in seen:
+            it["url"] = unwrap_url(it.get("url"))          # 必应/谷歌跳转 -> 真实文章地址
+            u = (it.get("url") or "").rstrip("/")
+            if not u or u in seen:
                 continue
+            host = urllib.parse.urlparse(u).netloc.lower()
+            if any(host.endswith(d) for d in REDIRECT_HOSTS) and "/articles/" not in u:
+                continue              # 解不出真实地址，留着只会让用户看到重定向提醒页
             if restrict_domain:
-                host = urllib.parse.urlparse(u).netloc.lower()
                 if restrict_domain not in host:
                     continue          # site: 检索时严格限定域名，保证"真·站内"
             if has_bad_marker(it.get("title"), it.get("desc")) or is_junk(it.get("title"), it.get("desc")):
                 continue              # 抓取返回的是错误页/跳转告警页，直接丢弃
             seen.add(u)
-            cat = classify(it["title"], it["desc"])
+            cat = classify(it["title"], it["desc"], u)
             if not cat:
                 continue
             plat = platform_of(u)
@@ -859,6 +907,18 @@ def llm_pick(cands):
                               it.get("steps"), it.get("action")):
                 drop_bad += 1
                 continue
+            # 字段名归一化：模型有时返回中文键名或漏字段
+            for zh, en in (("标题", "title"), ("题目", "title"), ("摘要", "summary"),
+                           ("分类", "category"), ("难度", "difficulty"), ("金额", "amount"),
+                           ("周期", "cycle"), ("平台", "platform"), ("小结", "takeaway"),
+                           ("步骤", "steps"), ("入手", "steps"), ("做法", "steps"),
+                           ("可执行", "action"), ("建议", "action"), ("来源", "source")):
+                if not it.get(en) and it.get(zh):
+                    it[en] = it[zh]
+            if not str(it.get("title") or "").strip():
+                it["title"] = src["title"]
+            if not str(it.get("summary") or "").strip():
+                it["summary"] = (src.get("desc") or src["title"])[:200]
             it["category"] = norm_category(it.get("category"), src["category"])
             # 来源与平台一律以抓取到的真实数据为准，不信模型自述（防张冠李戴）
             it["source"] = src["source"]
@@ -901,7 +961,15 @@ def write_report(items, mode):
              if not has_bad_marker(it.get("summary"), it.get("title"), it.get("takeaway"), it.get("steps"))]
     if len(clean) != len(items):
         log(f"  写盘前剔除了 {len(items) - len(clean)} 条含错误标记的条目")
-    items = clean
+    fixed = []
+    for it in items:
+        if not str(it.get("title") or "").strip():
+            s_txt = str(it.get("summary") or "").strip()
+            it["title"] = (s_txt[:28] + "…") if len(s_txt) > 28 else (s_txt or "（无标题）")
+        if not str(it.get("summary") or "").strip():
+            continue
+        fixed.append(it)
+    items = fixed
     n = len(items)
     cnt = {}
     for it in items:

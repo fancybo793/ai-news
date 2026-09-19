@@ -1,6 +1,6 @@
 {
   "date": "2026-09-19",
-  "runAt": "2026-09-19T07:52:50+08:00",
+  "runAt": "2026-09-19T14:14:03+08:00",
   "mode": "llm",
   "candidates": 27,
   "articlesFetched": 8,
@@ -33,7 +33,7 @@
     "谷歌新闻·免费 API 额度 薅羊毛": 0,
     "必应新闻·AI 工具 月入": 0,
     "谷歌新闻·AI 工具 月入": 0,
-    "BingNews·AI side hustle income": 5,
+    "BingNews·AI side hustle income": 6,
     "BingNews·free LLM API credits": 0,
     "BingNews·creator AI monetization": 3,
     "网页搜索·site:bilibili.com AI 变现": 0,
@@ -57,14 +57,14 @@
     "网页搜索·免费 token 白嫖 教程": 0,
     "B站站内·AI变现": 12,
     "B站站内·AI副业": 12,
-    "B站站内·AI赚钱": 12,
+    "B站站内·AI赚钱": 7,
     "量子位": 0,
     "少数派": 0,
     "爱范儿": 0,
     "36氪": 0,
     "Hacker News": 3
   },
-  "note": "mode=llm items=8 err=-",
+  "note": "mode=llm items=9 err=-",
   "error": "",
   "keyPresent": true,
   "keyLen": 49,
@@ -73,7 +73,7 @@
   "importNotes": [],
   "llmTrace": [
     "key=49 money=27 others=0 batches=1 requests=True",
-    "batch[9-12 条，全部为] ok=8",
-    "filter[9-12 条，全] url_miss=0 bad=0 kept=8"
+    "batch[9-12 条，全部为] ok=9",
+    "filter[9-12 条，全] url_miss=0 bad=0 kept=9"
   ]
 }

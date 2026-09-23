@@ -1,9 +1,9 @@
 {
-  "date": "2026-09-23",
-  "runAt": "2026-09-23T14:16:17+08:00",
+  "date": "2026-09-24",
+  "runAt": "2026-09-24T06:09:41+08:00",
   "mode": "llm",
-  "candidates": 29,
-  "articlesFetched": 7,
+  "candidates": 32,
+  "articlesFetched": 8,
   "sources": {
     "必应新闻·AI 副业 变现": 0,
     "谷歌新闻·AI 副业 变现": 0,
@@ -72,7 +72,7 @@
   "hasFeedparser": true,
   "importNotes": [],
   "llmTrace": [
-    "key=49 money=29 others=0 batches=1 requests=True",
+    "key=49 money=32 others=0 batches=1 requests=True",
     "batch[9-12 条，全部为] ok=9",
     "filter[9-12 条，全] url_miss=0 bad=0 kept=9"
   ]

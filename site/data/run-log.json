@@ -1,6 +1,6 @@
 {
   "date": "2026-10-04",
-  "runAt": "2026-10-04T06:04:10+08:00",
+  "runAt": "2026-10-04T08:21:30+08:00",
   "mode": "rule",
   "candidates": 3,
   "articlesFetched": 3,
@@ -64,7 +64,7 @@
     "36氪": 0,
     "Hacker News": 3
   },
-  "note": "mode=rule items=3 err=有效条目过少(1)",
+  "note": "mode=rule items=3 err=有效条目过少(2)",
   "error": "",
   "keyPresent": true,
   "keyLen": 49,
@@ -73,7 +73,7 @@
   "importNotes": [],
   "llmTrace": [
     "key=49 money=3 others=0 batches=1 requests=True",
-    "batch[9-12 条，全部为] ok=1",
-    "filter[9-12 条，全] url_miss=0 bad=0 kept=1"
+    "batch[9-12 条，全部为] ok=2",
+    "filter[9-12 条，全] url_miss=0 bad=0 kept=2"
   ]
 }

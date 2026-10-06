@@ -1,6 +1,6 @@
 {
-  "date": "2026-10-05",
-  "runAt": "2026-10-05T15:22:33+08:00",
+  "date": "2026-10-06",
+  "runAt": "2026-10-06T08:41:49+08:00",
   "mode": "rule",
   "candidates": 1,
   "articlesFetched": 1,
@@ -73,7 +73,7 @@
   "importNotes": [],
   "llmTrace": [
     "key=49 money=1 others=0 batches=1 requests=True",
-    "batch[9-12 条，全部为] ok=1",
-    "filter[9-12 条，全] url_miss=0 bad=0 kept=1"
+    "batch[9-12 条，全部为] ok=9",
+    "filter[9-12 条，全] url_miss=8 bad=0 kept=1"
   ]
 }

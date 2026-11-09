@@ -1,9 +1,9 @@
 {
   "date": "2026-11-09",
-  "runAt": "2026-11-09T09:25:22+08:00",
-  "mode": "skip",
-  "candidates": 0,
-  "articlesFetched": 0,
+  "runAt": "2026-11-09T16:20:56+08:00",
+  "mode": "rule",
+  "candidates": 1,
+  "articlesFetched": 1,
   "sources": {
     "必应新闻·AI 副业 变现": 0,
     "谷歌新闻·AI 副业 变现": 0,
@@ -60,16 +60,20 @@
     "B站站内·AI赚钱": 0,
     "量子位": 0,
     "少数派": 0,
-    "爱范儿": 0,
+    "爱范儿": 1,
     "36氪": 0,
     "Hacker News": 3
   },
-  "note": "无新增候选",
+  "note": "mode=rule items=1 err=有效条目过少(1)",
   "error": "",
   "keyPresent": true,
   "keyLen": 49,
   "hasRequests": true,
   "hasFeedparser": true,
   "importNotes": [],
-  "llmTrace": []
+  "llmTrace": [
+    "key=49 money=0 others=1 batches=1 requests=True",
+    "batch[5-7 条，为 fr] ok=1",
+    "filter[5-7 条，为 ] url_miss=0 bad=0 kept=1"
+  ]
 }

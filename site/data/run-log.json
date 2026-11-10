@@ -1,6 +1,6 @@
 {
-  "date": "2026-11-10",
-  "runAt": "2026-11-10T16:38:27+08:00",
+  "date": "2026-11-11",
+  "runAt": "2026-11-11T07:57:38+08:00",
   "mode": "llm",
   "candidates": 6,
   "articlesFetched": 5,
@@ -43,7 +43,7 @@
     "网页搜索·site:douyin.com AI 赚钱": 0,
     "网页搜索·site:youtube.com AI side hustle": 0,
     "网页搜索·site:zhihu.com AI 变现 拆解": 0,
-    "网页搜索·AI 变现 案例 月入 拆解": 0,
+    "网页搜索·AI 变现 案例 月入 拆解": 1,
     "网页搜索·小红书 AI 副业 教程": 0,
     "网页搜索·抖音 AI 赚钱 方法": 0,
     "网页搜索·B站 AI 变现 教程": 0,
@@ -64,7 +64,7 @@
     "36氪": 0,
     "Hacker News": 3
   },
-  "note": "mode=llm items=5 err=-",
+  "note": "mode=llm items=6 err=-",
   "error": "",
   "keyPresent": true,
   "keyLen": 49,
@@ -73,7 +73,7 @@
   "importNotes": [],
   "llmTrace": [
     "key=49 money=6 others=0 batches=1 requests=True",
-    "batch[9-12 条，全部为] ok=5",
-    "filter[9-12 条，全] url_miss=0 bad=0 kept=5"
+    "batch[9-12 条，全部为] ok=6",
+    "filter[9-12 条，全] url_miss=0 bad=0 kept=6"
   ]
 }

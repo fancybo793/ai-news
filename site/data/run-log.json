@@ -1,9 +1,9 @@
 {
   "date": "2026-11-19",
-  "runAt": "2026-11-19T10:55:49+08:00",
-  "mode": "rule",
-  "candidates": 2,
-  "articlesFetched": 2,
+  "runAt": "2026-11-19T17:03:33+08:00",
+  "mode": "llm",
+  "candidates": 5,
+  "articlesFetched": 5,
   "sources": {
     "必应新闻·AI 副业 变现": 0,
     "谷歌新闻·AI 副业 变现": 0,
@@ -35,7 +35,7 @@
     "谷歌新闻·AI 工具 月入": 0,
     "BingNews·AI side hustle income": 6,
     "BingNews·free LLM API credits": 0,
-    "BingNews·creator AI monetization": 6,
+    "BingNews·creator AI monetization": 5,
     "网页搜索·site:bilibili.com AI 变现": 0,
     "网页搜索·site:bilibili.com AI 副业 教程": 0,
     "网页搜索·site:xiaohongshu.com AI 变现": 0,
@@ -43,11 +43,11 @@
     "网页搜索·site:douyin.com AI 赚钱": 0,
     "网页搜索·site:youtube.com AI side hustle": 0,
     "网页搜索·site:zhihu.com AI 变现 拆解": 0,
-    "网页搜索·AI 变现 案例 月入 拆解": 1,
+    "网页搜索·AI 变现 案例 月入 拆解": 0,
     "网页搜索·小红书 AI 副业 教程": 0,
     "网页搜索·抖音 AI 赚钱 方法": 0,
     "网页搜索·B站 AI 变现 教程": 0,
-    "网页搜索·AI 变现 从0到1 实操": 0,
+    "网页搜索·AI 变现 从0到1 实操": 1,
     "网页搜索·AI 副业 无门槛 推荐": 0,
     "网页搜索·AI 副业 零成本 从0到1": 0,
     "网页搜索·AI 数字产品 模板 卖钱": 0,
@@ -64,7 +64,7 @@
     "36氪": 0,
     "Hacker News": 3
   },
-  "note": "mode=rule items=2 err=有效条目过少(2)",
+  "note": "mode=llm items=5 err=-",
   "error": "",
   "keyPresent": true,
   "keyLen": 49,
@@ -72,8 +72,8 @@
   "hasFeedparser": true,
   "importNotes": [],
   "llmTrace": [
-    "key=49 money=2 others=0 batches=1 requests=True",
-    "batch[9-12 条，全部为] ok=2",
-    "filter[9-12 条，全] url_miss=0 bad=0 kept=2"
+    "key=49 money=5 others=0 batches=1 requests=True",
+    "batch[9-12 条，全部为] ok=5",
+    "filter[9-12 条，全] url_miss=0 bad=0 kept=5"
   ]
 }

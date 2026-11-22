@@ -1,8 +1,8 @@
 {
   "date": "2026-11-22",
-  "runAt": "2026-11-22T09:54:03+08:00",
-  "mode": "rule",
-  "candidates": 3,
+  "runAt": "2026-11-22T16:25:55+08:00",
+  "mode": "llm",
+  "candidates": 4,
   "articlesFetched": 1,
   "sources": {
     "必应新闻·AI 副业 变现": 0,
@@ -53,7 +53,7 @@
     "网页搜索·AI 数字产品 模板 卖钱": 0,
     "网页搜索·AI 提示词 售卖 收入": 0,
     "网页搜索·一人公司 AI 收入": 0,
-    "网页搜索·大模型 免费 API 额度 领取": 0,
+    "网页搜索·大模型 免费 API 额度 领取": 1,
     "网页搜索·免费 token 白嫖 教程": 2,
     "B站站内·AI变现": 0,
     "B站站内·AI副业": 0,
@@ -64,7 +64,7 @@
     "36氪": 0,
     "Hacker News": 3
   },
-  "note": "mode=rule items=3 err=有效条目过少(3)",
+  "note": "mode=llm items=4 err=-",
   "error": "",
   "keyPresent": true,
   "keyLen": 49,
@@ -72,10 +72,10 @@
   "hasFeedparser": true,
   "importNotes": [],
   "llmTrace": [
-    "key=49 money=1 others=2 batches=2 requests=True",
+    "key=49 money=1 others=3 batches=2 requests=True",
     "batch[9-12 条，全部为] ok=1",
     "filter[9-12 条，全] url_miss=0 bad=0 kept=1",
-    "batch[5-7 条，为 fr] ok=2",
-    "filter[5-7 条，为 ] url_miss=0 bad=0 kept=3"
+    "batch[5-7 条，为 fr] ok=3",
+    "filter[5-7 条，为 ] url_miss=0 bad=0 kept=4"
   ]
 }
